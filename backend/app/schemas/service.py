@@ -1,4 +1,6 @@
 from pydantic import BaseModel, HttpUrl
+from datetime import datetime
+from typing import Optional, List
 
 class ServiceCreate(BaseModel):
     name: str
@@ -15,3 +17,18 @@ class ServiceResponse(BaseModel):
 
     class Config:
         from_attributes = True
+
+class CheckResponse(BaseModel):
+    id: int
+    checked_at: datetime
+    status: str
+    status_code: Optional[int] = None
+    latency_ms: Optional[int] = None
+    error_message: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+class ServiceStatusResponse(BaseModel):
+    uptime_percentage: float
+    recent_checks: List[CheckResponse]

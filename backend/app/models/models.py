@@ -24,13 +24,13 @@ class Service(Base):
     is_active = Column(Boolean, default=True)
 
     owner = relationship("User", back_populates="services")
-    checks = relationship("Check", back_populates="service")
-    incidents = relationship("Incident", back_populates="service")
+    checks = relationship("Check", back_populates="service", cascade="all, delete-orphan")
+    incidents = relationship("Incident", back_populates="service", cascade="all, delete-orphan")
 
 class Check(Base):
     __tablename__ = "checks"
     id = Column(Integer, primary_key=True, index=True)
-    service_id = Column(Integer, ForeignKey("services.id"), nullable=False)
+    service_id = Column(Integer, ForeignKey("services.id", ondelete="CASCADE"), nullable=False)
     checked_at = Column(DateTime(timezone=True), server_default=func.now())
     status = Column(String, nullable=False) # "up" or "down"
     status_code = Column(Integer, nullable=True)
