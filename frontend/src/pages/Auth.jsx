@@ -21,22 +21,28 @@ export default function Auth() {
         params.append('username', email);
         params.append('password', password);
         
-        const res = await api.post('/auth/login', params);
+        const res = await api.post('/auth/login', params, {
+          headers: {
+            'Content-Type': 'application/x-www-form-urlencoded'
+          }
+        });
         localStorage.setItem('token', res.data.access_token);
         navigate('/dashboard');
       } else {
-        // Registration uses standard JSON
-        await api.post('/auth/register', { email, password });
-        // Auto-login after successful registration
-        const params = new URLSearchParams();
-        params.append('username', email);
-        params.append('password', password);
-        const res = await api.post('/auth/login', params);
+        // Registration uses standard JSON and returns the JWT instantly
+        const res = await api.post('/auth/register', { email, password });
         localStorage.setItem('token', res.data.access_token);
         navigate('/dashboard');
       }
     } catch (err) {
-      setError(err.response?.data?.detail || 'An error occurred. Please try again.');
+      // Safely extract the error message to prevent React white-screen crashes
+      const detail = err.response?.data?.detail;
+      
+      if (Array.isArray(detail)) {
+        setError("Invalid format: " + detail[0].msg);
+      } else {
+        setError(detail || 'An error occurred. Please try again.');
+      }
     }
   };
 

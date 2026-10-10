@@ -2,17 +2,15 @@ from contextlib import asynccontextmanager
 import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from datetime import datetime, timezone
 
 from app.api import auth, services
 from app.worker import run_monitoring_cycle
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Start the background monitoring loop
-    worker_task = asyncio.create_task(run_monitoring_cycle())
+    # The worker is now decoupled and runs as an independent process
     yield
-    # Shutdown: Cancel the monitoring loop gracefully
-    worker_task.cancel()
 
 # Pass the lifespan context manager to the app
 app = FastAPI(title="Sentinel API", lifespan=lifespan)
@@ -35,3 +33,7 @@ app.include_router(services.router)
 @app.get("/")
 async def root():
     return {"status": "ok", "message": "Sentinel API is running"}
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy", "timestamp": datetime.now(timezone.utc).isoformat()}
