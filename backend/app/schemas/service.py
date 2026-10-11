@@ -1,4 +1,4 @@
-from pydantic import BaseModel, HttpUrl, Field
+from pydantic import BaseModel, HttpUrl, Field, field_validator
 from datetime import datetime
 from typing import Optional, List
 
@@ -9,6 +9,10 @@ class ServiceCreate(BaseModel):
     timeout_seconds: int = Field(10, ge=1, le=60)
     failure_threshold: int = Field(2, ge=1, le=10)
     expected_status_codes: Optional[List[int]] = None
+    method: str = Field("GET", max_length=10)
+    headers: Optional[dict] = None
+    body: Optional[str] = None
+    is_public: Optional[bool] = True
 
 class ServiceResponse(BaseModel):
     id: int
@@ -29,9 +33,29 @@ class ServiceResponse(BaseModel):
     timeout_seconds: int
     failure_threshold: int
     expected_status_codes: Optional[List[int]] = None
+    method: str
+    headers: Optional[dict] = None
+    body: Optional[str] = None
+    is_public: Optional[bool] = True
+
+    @field_validator("is_public", mode="before")
+    @classmethod
+    def default_legacy_is_public(cls, v):
+        return True if v is None else v
 
     class Config:
         from_attributes = True
+
+class ServiceUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1, max_length=100)
+    url: Optional[HttpUrl] = None
+    check_interval_seconds: Optional[int] = Field(None, ge=10, le=86400)
+    timeout_seconds: Optional[int] = Field(None, ge=1, le=60)
+    failure_threshold: Optional[int] = Field(None, ge=1, le=10)
+    expected_status_codes: Optional[List[int]] = None
+    method: Optional[str] = Field(None, max_length=10)
+    headers: Optional[dict] = None
+    body: Optional[str] = None
 
 class CheckResponse(BaseModel):
     id: int
@@ -71,7 +95,6 @@ class ServiceSummary(BaseModel):
     service: ServiceResponse
     uptime_percentage: float
     recent_checks: List[CheckResponse] = []
-    # FIX: Use the specific schema instead of dict
     active_incident: Optional[IncidentResponse] = None
 
     class Config:
@@ -80,14 +103,6 @@ class ServiceSummary(BaseModel):
 class DashboardSummaryResponse(BaseModel):
     stats: DashboardStats
     services: List[ServiceSummary]
-
-class ServiceUpdate(BaseModel):
-    name: Optional[str] = Field(None, min_length=1, max_length=100)
-    url: Optional[HttpUrl] = None
-    check_interval_seconds: Optional[int] = Field(None, ge=10, le=86400)
-    timeout_seconds: Optional[int] = Field(None, ge=1, le=60)
-    failure_threshold: Optional[int] = Field(None, ge=1, le=10)
-    expected_status_codes: Optional[List[int]] = None
 
 class GlobalIncidentResponse(BaseModel):
     id: int

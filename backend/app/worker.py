@@ -29,9 +29,10 @@ async def send_webhook_alert(url: str, message: str):
     if not url: return
     try:
         async with httpx.AsyncClient() as client:
-            await client.post(url, json={"content": message}, timeout=5.0)
+            response = await client.post(url, json={"content": message}, timeout=5.0)
+            response.raise_for_status() # NEW: Raises an exception if the webhook receiver rejects it!
     except Exception as e:
-        print(f"Webhook delivery failed: {e}")
+        print(f"❌ Webhook delivery failed: {e}")
 
 async def ping_service(client: httpx.AsyncClient, service_id: int):
     """Runs an individual check with dynamic configurations and guaranteed cleanup."""
@@ -49,15 +50,30 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                     return
 
                 try:
-                    # 1. Apply Dynamic Timeout
-                    response = await client.get(service.url, timeout=float(service.timeout_seconds))
+                    method = service.method or "GET"
+                    headers = service.headers or {}
+                    
+                    request_kwargs = {
+                        "method": method,
+                        "url": service.url,
+                        "timeout": float(service.timeout_seconds),
+                        "headers": headers
+                    }
+                    
+                    if service.body and method.upper() in ["POST", "PUT", "PATCH"]:
+                        request_kwargs["content"] = service.body.encode('utf-8')
+
+                    response = await client.request(**request_kwargs)
                     status_code = response.status_code
                     
-                    # 2. Apply Custom Expected Status Codes (if configured)
                     if service.expected_status_codes:
                         is_up = status_code in service.expected_status_codes
                     else:
                         is_up = 200 <= status_code < 400
+                    
+                    # Capture the exact server error message if it fails
+                    if not is_up:
+                        error_message = f"HTTP {status_code}: {response.text[:255]}"
                         
                 except Exception as e:
                     is_up = False
@@ -85,15 +101,22 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                 service.last_status_code = status_code
                 service.next_check_at = end_time + timedelta(seconds=service.check_interval_seconds)
 
+                # --- NEW: Cooldown Logic ---
+                # Allow a new alert if it has been at least 15 minutes since the last one, or if no alert has ever been sent.
+                now = datetime.now(timezone.utc)
+                can_alert = (
+                    service.last_alert_at is None or 
+                    (now - service.last_alert_at).total_seconds() > 900 # 900 seconds = 15 mins
+                )
+
                 if not is_up:
                     service.failure_count += 1
                     service.status = "DOWN"
                     
-                    # 3. Apply Dynamic Failure Threshold
                     if not open_incident and service.failure_count >= service.failure_threshold:
                         new_incident = Incident(
                             service_id=service_id,
-                            started_at=datetime.now(timezone.utc),
+                            started_at=now,
                             is_open=True,
                             cause=error_message or f"HTTP {status_code}"
                         )
@@ -101,46 +124,58 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                         print(f"⚠️ [ALERT] Incident opened for {service.name}")
                         
                         owner = await db.get(User, service.owner_id)
-                        if owner:
+                        
+                        # Only send email/webhook if the cooldown has passed
+                        if owner and can_alert:
                             alert_msg = f"🚨 Sentinel Alert: {service.name} is DOWN. ({new_incident.cause})"
                             
-                            # Send Email
                             await send_alert_email(
                                 owner.email, 
                                 f"🚨 Sentinel Alert: {service.name} is DOWN", 
                                 f"Your service '{service.name}' ({service.url}) is down.\n\nError: {new_incident.cause}\nTime: {new_incident.started_at}"
                             )
                             
-                            # Send Webhook
                             if owner.webhook_url:
                                 await send_webhook_alert(owner.webhook_url, alert_msg)
+                                
+                            # Update the cooldown tracker
+                            service.last_alert_at = now
+                            print(f"📧 [NOTIFICATION] Sent DOWN alert for {service.name}")
+                        else:
+                            print(f"🔇 [COOLDOWN] Suppressed DOWN alert for {service.name} (Rate Limited)")
+
                 else:
                     service.failure_count = 0
                     service.status = "UP"
                     
                     if open_incident:
                         open_incident.is_open = False
-                        open_incident.resolved_at = datetime.now(timezone.utc)
+                        open_incident.resolved_at = now
                         print(f"✅ [RESOLVED] Incident closed for {service.name}")
                         
                         owner = await db.get(User, service.owner_id)
+                        
+                        # FIX: Removed `can_alert` requirement here. Recovery messages ALWAYS send!
                         if owner:
                             recovery_msg = f"✅ Sentinel Recovery: {service.name} is back UP."
                             
-                            # Send Email
                             await send_alert_email(
                                 owner.email, 
                                 f"✅ Sentinel Recovery: {service.name} is UP", 
                                 f"Your service '{service.name}' ({service.url}) has recovered."
                             )
                             
-                            # Send Webhook
                             if owner.webhook_url:
                                 await send_webhook_alert(owner.webhook_url, recovery_msg)
+                            
+                            # Reset the cooldown tracker after a successful recovery
+                            service.last_alert_at = now
+                            print(f"📧 [NOTIFICATION] Sent UP recovery alert for {service.name}")
+                        else:
+                            print(f"🔇 [COOLDOWN] Suppressed UP recovery alert for {service.name} (Rate Limited)")
                 
-                # Log the output before the transaction commits
                 status_text = "UP" if is_up else "DOWN"
-                print(f"[{datetime.now().strftime('%H:%M:%S')}] {service.name} | {status_text} | {latency}ms")
+                print(f"[{now.strftime('%H:%M:%S')}] {service.name} | {status_text} | {latency}ms")
                 
                 await db.commit()
 

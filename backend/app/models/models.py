@@ -12,6 +12,8 @@ class User(Base):
     role = Column(String, default="user")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     webhook_url = Column(String, nullable=True)
+    public_slug = Column(String, unique=True, index=True, nullable=True)
+    is_public_page_enabled = Column(Boolean, default=False)
 
     services = relationship("Service", back_populates="owner")
     alert_channels = relationship("AlertChannel", back_populates="user")
@@ -32,8 +34,12 @@ class Service(Base):
     last_status_code = Column(Integer, nullable=True)
     timeout_seconds = Column(Integer, nullable=False, default=10, server_default="10")
     failure_threshold = Column(Integer, nullable=False, default=2, server_default="2")
-    # Stores a list like [200, 201, 302]. If NULL, we default to 200-399.
     expected_status_codes = Column(JSON, nullable=True)
+    method = Column(String, nullable=False, default="GET", server_default="GET")
+    headers = Column(JSON, nullable=True)
+    body = Column(String, nullable=True)
+    last_alert_at = Column(DateTime(timezone=True), nullable=True)
+    is_public = Column(Boolean, default=True)
 
     owner = relationship("User", back_populates="services")
     checks = relationship("Check", back_populates="service", cascade="all, delete-orphan")

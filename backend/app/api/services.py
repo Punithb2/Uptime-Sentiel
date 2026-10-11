@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, case
 from typing import List
@@ -27,7 +27,10 @@ async def create_service(
         check_interval_seconds=service_data.check_interval_seconds,
         timeout_seconds=service_data.timeout_seconds,
         failure_threshold=service_data.failure_threshold,
-        expected_status_codes=service_data.expected_status_codes
+        expected_status_codes=service_data.expected_status_codes,
+        method=service_data.method.upper(),
+        headers=service_data.headers,
+        body=service_data.body
     )
     db.add(new_service)
     await db.commit()
@@ -349,16 +352,47 @@ async def update_service(
     await db.refresh(service)
     return service
 
-@router.get("/status/public/{user_id}")
-async def get_public_status_page(user_id: int, db: AsyncSession = Depends(get_db)):
-    """Unauthenticated endpoint to display a user's public status page."""
+@router.patch("/{service_id}/visibility")
+async def toggle_service_visibility(
+    service_id: int, 
+    is_public: bool = Body(..., embed=True),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Toggles whether a monitor is displayed on the public status page."""
+    query = await db.execute(select(Service).where(Service.id == service_id, Service.owner_id == current_user.id))
+    service = query.scalars().first()
+    
+    if not service:
+        raise HTTPException(status_code=404, detail="Service not found")
+        
+    service.is_public = is_public
+    await db.commit()
+    
+    return {"message": "Visibility updated", "is_public": service.is_public}
+
+@router.get("/status/public/{slug}")
+async def get_public_status_page(slug: str, db: AsyncSession = Depends(get_db)):
+    """Unauthenticated endpoint to display a user's public status page via a secure random slug."""
+    # 1. Lookup user by slug and verify the page is enabled globally
+    user_query = await db.execute(select(User).where(User.public_slug == slug))
+    user = user_query.scalars().first()
+
+    if not user or not user.is_public_page_enabled:
+        raise HTTPException(status_code=404, detail="Public status page not found or is disabled.")
+
+    # 2. Fetch only ACTIVE and PUBLIC services for this user
     services_query = await db.execute(
-        select(Service).where(Service.owner_id == user_id, Service.is_active == True)
+        select(Service).where(
+            Service.owner_id == user.id, 
+            Service.is_active == True,
+            Service.is_public == True  # ENFORCE: Individual monitor privacy
+        )
     )
     services = services_query.scalars().all()
     
     if not services:
-        raise HTTPException(status_code=404, detail="No public services found")
+        return {"services": [], "incidents": []}
         
     service_ids = [s.id for s in services]
     twenty_four_hours_ago = datetime.now(timezone.utc) - timedelta(hours=24)
@@ -377,7 +411,10 @@ async def get_public_status_page(user_id: int, db: AsyncSession = Depends(get_db
     
     # Batch Recent Incidents
     incidents_query = await db.execute(
-        select(Incident).where(Incident.service_id.in_(service_ids)).order_by(desc(Incident.started_at)).limit(20)
+        select(Incident)
+        .where(Incident.service_id.in_(service_ids))
+        .order_by(desc(Incident.started_at))
+        .limit(20)
     )
     all_incidents = incidents_query.scalars().all()
     

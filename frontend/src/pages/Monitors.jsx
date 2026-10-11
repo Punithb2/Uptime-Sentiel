@@ -1,10 +1,10 @@
-import { useState} from 'react';
+import { useState } from 'react';
 import { useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
-import { Plus, Trash2, Globe, Clock, CheckCircle, XCircle, HelpCircle, AlertTriangle, Pause, Play, RefreshCw, Server } from 'lucide-react';
+import { Plus, Trash2, Globe, Clock, CheckCircle, XCircle, HelpCircle, AlertTriangle, Pause, Play, RefreshCw, Server, ChevronDown, ChevronUp, Settings, Eye, EyeOff } from 'lucide-react';
 import { api } from '../lib/api';
 
-function ServiceCard({ data, onDelete, onAction }) {
+function ServiceCard({ data, onDelete, onAction, onToggleVisibility }) {
   const { service, uptime_percentage, recent_checks, active_incident } = data;
   const latestCheck = recent_checks[0];
   const isPending = service.status === "PENDING";
@@ -85,7 +85,8 @@ function ServiceCard({ data, onDelete, onAction }) {
               displayChecks.map((check, idx) => (
                 <div
                   key={check.id || idx}
-                  title={`${new Date(check.checked_at).toLocaleTimeString()} - ${check.status} (${check.latency_ms}ms)`}
+                  title={`${new Date(check.checked_at).toLocaleTimeString()}
+${check.status} (${check.latency_ms}ms)`}
                   className={`flex-1 h-full rounded-sm ${check.status === 'UP' ? 'bg-emerald-500' : 'bg-red-500'}`}
                 />
               ))
@@ -111,6 +112,13 @@ function ServiceCard({ data, onDelete, onAction }) {
               <Pause className="h-4 w-4" />
             </button>
           )}
+          <button 
+            onClick={() => onToggleVisibility(service.id, service.is_public)} 
+            title={service.is_public ? "Hide from Public Page" : "Show on Public Page"} 
+            className={`transition-colors ${service.is_public ? 'text-blue-400 hover:text-blue-300' : 'text-gray-500 hover:text-gray-400'}`}
+          >
+            {service.is_public ? <Eye className="h-4 w-4" /> : <EyeOff className="h-4 w-4" />}
+          </button>
         </div>
         <button onClick={() => onDelete(service.id)} className="text-gray-500 hover:text-red-400 text-xs flex items-center gap-1 transition-colors">
           <Trash2 className="h-3.5 w-3.5" /> Remove
@@ -122,30 +130,77 @@ function ServiceCard({ data, onDelete, onAction }) {
 
 export default function Monitors() {
   const queryClient = useQueryClient();
+  
+  // Basic State
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [interval, setInterval] = useState(60);
-  const [actionError, setActionError] = useState(''); // Renamed to avoid clashing with query error
+  const [actionError, setActionError] = useState('');
 
-  // TanStack Query automatically handles fetching, caching, and background polling!
+  // Advanced Network State
+  const [showAdvanced, setShowAdvanced] = useState(false);
+  const [method, setMethod] = useState('GET');
+  const [headers, setHeaders] = useState('');
+  const [body, setBody] = useState('');
+  const [expectedCodes, setExpectedCodes] = useState('');
+  const [timeoutVal, setTimeoutVal] = useState('10');
+  const [threshold, setThreshold] = useState('2');
+
   const { data: summary, isLoading } = useQuery({
     queryKey: ['dashboardSummary'],
     queryFn: async () => {
       const res = await api.get('/services/dashboard/summary');
       return res.data;
     },
-    refetchInterval: 15000, // Poll every 15s in the background
+    refetchInterval: 15000, 
   });
 
   const handleAddService = async (e) => {
     e.preventDefault();
     setActionError('');
+
+    // Parse JSON headers safely
+    let parsedHeaders = null;
+    if (headers.trim()) {
+      try {
+        parsedHeaders = JSON.parse(headers);
+      } catch (err) {
+        console.error(err);
+        setActionError('Invalid JSON format in Headers field.');
+        return;
+      }
+    }
+
+    // Parse status codes safely
+    const parsedStatusCodes = expectedCodes.trim() 
+      ? expectedCodes.split(',').map(code => Number(code.trim())).filter(code => !isNaN(code))
+      : null;
+
     try {
-      await api.post('/services/', { name, url, check_interval_seconds: Number(interval) });
+      await api.post('/services/', { 
+        name, 
+        url, 
+        check_interval_seconds: Number(interval),
+        method,
+        headers: parsedHeaders,
+        body,
+        expected_status_codes: parsedStatusCodes,
+        timeout_seconds: Number(timeoutVal),
+        failure_threshold: Number(threshold)
+      });
+      
+      // Reset form
       setName('');
       setUrl('');
       setInterval(60);
-      // Instantly tell the cache that the data is old, forcing a background refetch
+      setMethod('GET');
+      setHeaders('');
+      setBody('');
+      setExpectedCodes('');
+      setTimeoutVal('10');
+      setThreshold('2');
+      setShowAdvanced(false);
+
       queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] });
     } catch (err) {
       setActionError(err.response?.data?.detail || 'Failed to add service.');
@@ -172,6 +227,15 @@ export default function Monitors() {
     }
   };
 
+  const handleToggleVisibility = async (id, currentStatus) => {
+  try {
+    await api.patch(`/services/${id}/visibility`, { is_public: !currentStatus });
+    queryClient.invalidateQueries({ queryKey: ['dashboardSummary'] });
+  } catch (err) {
+    console.error("Failed to toggle visibility", err);
+  }
+};
+
   return (
     <div className="max-w-7xl mx-auto px-6 py-8 space-y-8">
       <div className="flex items-center justify-between">
@@ -185,21 +249,111 @@ export default function Monitors() {
           <Plus className="h-5 w-5 text-blue-400" /> Register New Endpoint
         </h2>
         {actionError && <div className="mb-4 bg-red-500/10 border border-red-500 text-red-400 p-3 rounded-lg text-sm">{actionError}</div>}
-        <form onSubmit={handleAddService} className="grid grid-cols-1 md:grid-cols-4 gap-4">
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1">Service Name</label>
-            <input type="text" required placeholder="e.g. Production API" value={name} onChange={(e) => setName(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-          <div className="md:col-span-2">
-            <label className="block text-xs font-medium text-gray-400 mb-1">Target URL</label>
-            <input type="url" required placeholder="https://example.com" value={url} onChange={(e) => setUrl(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-          </div>
-          <div>
-            <label className="block text-xs font-medium text-gray-400 mb-1">Interval (Sec)</label>
-            <div className="flex gap-2">
-              <input type="number" min="10" required value={interval} onChange={(e) => setInterval(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
-              <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">Add</button>
+        
+        <form onSubmit={handleAddService}>
+          <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mb-2">
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Service Name</label>
+              <input type="text" required placeholder="e.g. Production API" value={name} onChange={(e) => setName(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
+            <div className="md:col-span-2">
+              <label className="block text-xs font-medium text-gray-400 mb-1">Target URL</label>
+              <input type="url" required placeholder="https://example.com" value={url} onChange={(e) => setUrl(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Interval (Sec)</label>
+              <div className="flex gap-2">
+                <input type="number" min="10" required value={interval} onChange={(e) => setInterval(e.target.value)} className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                <button type="submit" className="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-medium transition-colors">Add</button>
+              </div>
+            </div>
+          </div>
+
+          <div className="mt-3">
+            <button
+              type="button"
+              onClick={() => setShowAdvanced(!showAdvanced)}
+              className="flex items-center gap-1.5 text-xs font-medium text-gray-400 hover:text-white transition-colors py-1"
+            >
+              <Settings className="w-3.5 h-3.5" />
+              {showAdvanced ? 'Hide Advanced Settings' : 'Show Advanced Settings'}
+              {showAdvanced ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
+            </button>
+
+            {showAdvanced && (
+              <div className="mt-4 pt-4 border-t border-gray-700/50 grid grid-cols-1 md:grid-cols-2 gap-4 animate-in fade-in slide-in-from-top-2 duration-200">
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">HTTP Method</label>
+                  <select 
+                    value={method} 
+                    onChange={(e) => setMethod(e.target.value)}
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                    <option value="DELETE">DELETE</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">Expected Status Codes</label>
+                  <input 
+                    type="text"
+                    placeholder="e.g. 200, 201, 401"
+                    value={expectedCodes}
+                    onChange={(e) => setExpectedCodes(e.target.value)}
+                    className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                <div>
+                  <label className="block text-xs font-medium text-gray-400 mb-1">HTTP Headers (JSON)</label>
+                  <textarea 
+                    rows="2"
+                    placeholder='{"Authorization": "Bearer token"}'
+                    value={headers}
+                    onChange={(e) => setHeaders(e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-700 font-mono text-xs rounded-lg px-3 py-2 text-green-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
+
+                {method !== 'GET' && method !== 'DELETE' && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-400 mb-1">Request Body</label>
+                    <textarea 
+                      rows="2"
+                      placeholder='{"key": "value"} or form-data'
+                      value={body}
+                      onChange={(e) => setBody(e.target.value)}
+                      className="w-full bg-gray-900 border border-gray-700 font-mono text-xs rounded-lg px-3 py-2 text-green-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                )}
+
+                <div className="flex gap-4 md:col-span-2">
+                  <div className="w-1/4">
+                    <label className="block text-xs font-medium text-gray-400 mb-1">Timeout (Sec)</label>
+                    <input 
+                      type="number" min="1" max="60"
+                      value={timeoutVal}
+                      onChange={(e) => setTimeoutVal(e.target.value)}
+                      className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                  <div className="w-1/4">
+                    <label className="block text-xs font-medium text-gray-400 mb-1">Failure Threshold</label>
+                    <input 
+                      type="number" min="1" max="10"
+                      value={threshold}
+                      onChange={(e) => setThreshold(e.target.value)}
+                      className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
         </form>
       </div>
@@ -215,7 +369,8 @@ export default function Monitors() {
                 key={data.service.id} 
                 data={data} 
                 onDelete={handleDeleteService} 
-                onAction={handleServiceAction} 
+                onAction={handleServiceAction}
+                onToggleVisibility={handleToggleVisibility}
               />
             ))}
           </div>

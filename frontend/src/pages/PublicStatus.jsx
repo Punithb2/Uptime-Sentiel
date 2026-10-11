@@ -4,12 +4,12 @@ import { Activity, CheckCircle, AlertTriangle, Clock } from 'lucide-react';
 import { api } from '../lib/api';
 
 export default function PublicStatus() {
-  const { userId } = useParams();
+  const { slug } = useParams();
 
   const { data, isLoading, error } = useQuery({
-    queryKey: ['publicStatus', userId],
+    queryKey: ['publicStatus', slug],
     queryFn: async () => {
-      const res = await api.get(`/services/status/public/${userId}`);
+      const res = await api.get(`/services/status/public/${slug}`);
       return res.data;
     },
     refetchInterval: 30000,

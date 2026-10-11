@@ -1,13 +1,15 @@
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from sqlalchemy import select, delete
 import jwt
+import urllib.parse
+import uuid
 
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import get_password_hash, verify_password, create_access_token, get_current_user, ALGORITHM
-from app.models.models import User
+from app.models.models import User, Service, Check, Incident
 from app.schemas.user import UserCreate, Token, UserResponse, UserUpdate
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
@@ -76,11 +78,66 @@ async def update_user_profile(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Updates the user's settings, such as their alert webhook."""
+    """Updates the user's settings, including webhooks, email, and password."""
+    # 1. Update Webhook with SSRF Protection
     if update_data.webhook_url is not None:
-        # Save the URL, or clear it if the user passes an empty string
-        current_user.webhook_url = update_data.webhook_url if update_data.webhook_url.strip() else None
+        url = update_data.webhook_url.strip()
+        if url:
+            parsed = urllib.parse.urlparse(url)
+            if parsed.scheme != "https":
+                raise HTTPException(status_code=400, detail="Webhook URL must use secure HTTPS.")
+            
+            # Block internal network IPs to prevent SSRF attacks
+            hostname = parsed.hostname or ""
+            if hostname in ["localhost", "127.0.0.1", "0.0.0.0"] or hostname.startswith(("192.168.", "10.", "172.")):
+                raise HTTPException(status_code=400, detail="Internal IP addresses are not permitted for webhooks.")
+                
+        current_user.webhook_url = url if url else None
+        
+    # 2. Update Email
+    if update_data.email:
+        if update_data.email != current_user.email:
+            existing = await db.execute(select(User).where(User.email == update_data.email))
+            if existing.scalars().first():
+                raise HTTPException(status_code=400, detail="Email already in use.")
+        current_user.email = update_data.email
+
+    # 3. Update Password
+    if update_data.new_password:
+        if not update_data.current_password or not verify_password(update_data.current_password, current_user.hashed_password):
+            raise HTTPException(status_code=400, detail="Invalid current password.")
+        current_user.hashed_password = get_password_hash(update_data.new_password)
+
+    # 4. Update Public Page Toggle & Auto-generate Slug
+    if update_data.is_public_page_enabled is not None:
+        current_user.is_public_page_enabled = update_data.is_public_page_enabled
+        # Generate a random slug if they are enabling it for the first time and don't have one
+        if current_user.is_public_page_enabled and not current_user.public_slug:
+            import uuid
+            current_user.public_slug = uuid.uuid4().hex[:12]
         
     await db.commit()
     await db.refresh(current_user)
     return current_user
+
+@router.delete("/me")
+async def delete_user_account(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Permanently deletes the user and all their associated data."""
+    # 1. Find all services owned by the user
+    services_query = await db.execute(select(Service.id).where(Service.owner_id == current_user.id))
+    service_ids = services_query.scalars().all()
+    
+    # 2. If they have services, cleanly delete all child records first
+    if service_ids:
+        await db.execute(delete(Check).where(Check.service_id.in_(service_ids)))
+        await db.execute(delete(Incident).where(Incident.service_id.in_(service_ids)))
+        await db.execute(delete(Service).where(Service.id.in_(service_ids)))
+    
+    # 3. Delete the user
+    await db.delete(current_user)
+    await db.commit()
+    
+    return {"message": "Account permanently deleted"}

@@ -49,7 +49,7 @@ export default function App() {
         <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route path="/" element={<Auth />} />
-            <Route path="/status/:userId" element={<PublicStatus />} />
+            <Route path="/status/:slug" element={<PublicStatus />} />
             
             <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
               <Route path="/dashboard" element={<Dashboard />} />

@@ -18,6 +18,9 @@ export default function MonitorDetails() {
   const [editTimeout, setEditTimeout] = useState(10);
   const [editThreshold, setEditThreshold] = useState(2);
   const [editStatusCodes, setEditStatusCodes] = useState('');
+  const [editMethod, setEditMethod] = useState('GET');
+  const [editHeaders, setEditHeaders] = useState('');
+  const [editBody, setEditBody] = useState('');
   const [updateMsg, setUpdateMsg] = useState('');
 
   const fetchHistory = useCallback(async () => {
@@ -36,6 +39,9 @@ export default function MonitorDetails() {
         // Convert array like [200, 201] to string "200, 201" for the input field
         const codes = res.data.service.expected_status_codes;
         setEditStatusCodes(codes ? codes.join(', ') : '');
+        setEditMethod(res.data.service.method || 'GET');
+        setEditHeaders(res.data.service.headers ? JSON.stringify(res.data.service.headers, null, 2) : '');
+        setEditBody(res.data.service.body || '');
       }
     } catch (err) {
       console.error(err);
@@ -57,10 +63,21 @@ export default function MonitorDetails() {
     setUpdateMsg('');
     setError('');
     
-    // Parse the comma-separated string back into an array of integers
     const parsedStatusCodes = editStatusCodes.trim() 
       ? editStatusCodes.split(',').map(code => Number(code.trim())).filter(code => !isNaN(code))
       : null;
+
+    // Parse JSON headers safely
+    let parsedHeaders = null;
+    if (editHeaders.trim()) {
+      try {
+        parsedHeaders = JSON.parse(editHeaders);
+      } catch (err) {
+        console.error(err);
+        setError('Invalid JSON format in Headers field.');
+        return;
+      }
+    }
 
     try {
       await api.patch(`/services/${id}`, {
@@ -69,11 +86,15 @@ export default function MonitorDetails() {
         check_interval_seconds: Number(editInterval),
         timeout_seconds: Number(editTimeout),
         failure_threshold: Number(editThreshold),
-        expected_status_codes: parsedStatusCodes
+        expected_status_codes: parsedStatusCodes,
+        method: editMethod,
+        headers: parsedHeaders,
+        body: editBody
       });
       setUpdateMsg('Monitor updated successfully!');
       fetchHistory();
     } catch (err) {
+      console.error(err);
       setError(err.response?.data?.detail || 'Failed to update monitor.');
     }
   };
@@ -199,7 +220,53 @@ export default function MonitorDetails() {
                 <input type="number" min="1" max="60" value={editTimeout} onChange={(e) => setEditTimeout(e.target.value)} required className="w-full bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500" />
               </div>
             </div>
+            <div className="pt-4 border-t border-gray-700/50">
+              <h3 className="text-sm font-medium text-white mb-4 flex items-center gap-2">
+                <Globe className="h-4 w-4 text-blue-400" /> Advanced Network Configurations
+              </h3>
+              <div className="grid grid-cols-1 gap-5">
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-1">HTTP Method</label>
+                  <select 
+                    value={editMethod} 
+                    onChange={(e) => setEditMethod(e.target.value)}
+                    className="w-full md:w-1/3 bg-gray-700 border border-gray-600 rounded-lg px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  >
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                    <option value="DELETE">DELETE</option>
+                  </select>
+                </div>
+            
+                <div>
+                  <label className="block text-sm font-medium text-gray-400 mb-1">HTTP Headers (JSON Format)</label>
+                  <p className="text-xs text-gray-500 mb-2">Provide a valid JSON object for custom headers like Authorization or Content-Type.</p>
+                  <textarea 
+                    rows="3"
+                    placeholder='{"Authorization": "Bearer token123", "Content-Type": "application/json"}'
+                    value={editHeaders}
+                    onChange={(e) => setEditHeaders(e.target.value)}
+                    className="w-full bg-gray-900 border border-gray-600 font-mono text-sm rounded-lg px-3 py-2 text-green-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  />
+                </div>
 
+                {editMethod !== 'GET' && editMethod !== 'DELETE' && (
+                  <div>
+                    <label className="block text-sm font-medium text-gray-400 mb-1">Request Body</label>
+                    <p className="text-xs text-gray-500 mb-2">Payload to send with POST, PUT, or PATCH requests.</p>
+                    <textarea 
+                      rows="3"
+                      placeholder='{"ping": "pong"}'
+                      value={editBody}
+                      onChange={(e) => setEditBody(e.target.value)}
+                      className="w-full bg-gray-900 border border-gray-600 font-mono text-sm rounded-lg px-3 py-2 text-green-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                    />
+                  </div>
+                )}
+              </div>
+            </div>
             <div className="pt-4 border-t border-gray-700/50">
               <h3 className="text-sm font-medium text-white mb-4 flex items-center gap-2">
                 <ShieldAlert className="h-4 w-4 text-blue-400" /> Alert Conditions
