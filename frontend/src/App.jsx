@@ -1,7 +1,10 @@
 import { Suspense, lazy } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, Link } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import Layout from './components/Layout';
+import { ToastProvider } from './components/Toast';
+import { RouteSkeleton } from './components/Skeletons';
+import { ThemeProvider } from './components/ThemeProvider';
 
 // 1. Lazy load all pages so they only download when the user clicks them
 const Auth = lazy(() => import('./pages/Auth'));
@@ -23,30 +26,33 @@ function ProtectedRoute({ children }) {
   return token ? children : <Navigate to="/" />;
 }
 
-// A simple loading fallback for lazy-loaded routes
-const PageLoader = () => (
-  <div className="min-h-screen bg-gray-900 flex items-center justify-center text-gray-500">
-    Loading module...
-  </div>
-);
-
 // 2. Add a 404 Not Found Component
 const NotFound = () => (
-  <div className="min-h-screen bg-gray-900 flex flex-col items-center justify-center text-center px-6">
-    <h1 className="text-6xl font-bold text-gray-700 mb-4">404</h1>
-    <p className="text-xl text-gray-400 mb-8">This page does not exist or was moved.</p>
-    <a href="/dashboard" className="px-6 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors">
+  <div className="min-h-screen app-bg flex flex-col items-center justify-center text-center px-6">
+    <div className="h-16 w-16 rounded-2xl bg-blue-500/10 border border-blue-500/20 text-blue-400 flex items-center justify-center mb-4">
+      <span className="text-2xl font-black">404</span>
+    </div>
+    <h1 className="text-2xl font-bold text-white mb-2">Endpoint Not Found</h1>
+    <p className="text-sm text-slate-400 mb-6 max-w-sm">
+      The route you requested does not exist or has been relocated.
+    </p>
+    <Link 
+      to="/dashboard" 
+      className="px-5 py-2.5 bg-blue-600 hover:bg-blue-500 text-white text-xs font-semibold rounded-xl shadow-lg shadow-blue-600/30 transition"
+    >
       Return to Dashboard
-    </a>
+    </Link>
   </div>
 );
 
 export default function App() {
   return (
     <QueryClientProvider client={queryClient}>
+      <ThemeProvider>
+      <ToastProvider>
       <BrowserRouter>
         {/* Wrap Routes in Suspense to handle the lazy loading state */}
-        <Suspense fallback={<PageLoader />}>
+        <Suspense fallback={<RouteSkeleton />}>
           <Routes>
             <Route path="/" element={<Auth />} />
             <Route path="/status/:slug" element={<PublicStatus />} />
@@ -64,6 +70,8 @@ export default function App() {
           </Routes>
         </Suspense>
       </BrowserRouter>
+      </ToastProvider>
+      </ThemeProvider>
     </QueryClientProvider>
   );
 }
