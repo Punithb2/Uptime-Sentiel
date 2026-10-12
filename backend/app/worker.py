@@ -8,6 +8,7 @@ from app.core.database import engine
 from app.models.models import Service, Check, Incident, User
 from app.core.mailer import send_alert_email
 from app.core.url_validator import validate_safe_url
+from app.core.logger import logger
 
 MAX_CONCURRENT_CHECKS = 50
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
@@ -21,9 +22,9 @@ async def cleanup_old_checks():
             result = await db.execute(delete(Check).where(Check.checked_at < cutoff_date))
             await db.commit()
             if result.rowcount > 0:
-                print(f"🧹 Database Cleanup: Removed {result.rowcount} old checks.")
+                logger.info(f"Database Cleanup: Removed {result.rowcount} old checks.")
     except Exception as e:
-        print(f"Cleanup error: {e}")
+        logger.error(f"Cleanup error: {e}")
 
 async def send_webhook_alert(url: str, message: str):
     """Fires a generic JSON payload that works natively with Slack and Discord."""
@@ -35,7 +36,7 @@ async def send_webhook_alert(url: str, message: str):
             response = await client.post(url, json={"content": message}, timeout=5.0)
             response.raise_for_status() # Raises an exception if the webhook receiver rejects it!
     except Exception as e:
-        print(f"❌ Webhook delivery failed: {e}")
+        logger.error(f"Webhook delivery failed to {url}: {e}")
 
 async def ping_service(client: httpx.AsyncClient, service_id: int):
     """Runs an individual check with dynamic configurations and guaranteed cleanup."""
@@ -127,7 +128,7 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                             cause=error_message or f"HTTP {status_code}"
                         )
                         db.add(new_incident)
-                        print(f"⚠️ [ALERT] Incident opened for {service.name}")
+                        logger.warning(f"[ALERT] Incident opened for {service.name} (cause: {new_incident.cause})")
                         
                         owner = await db.get(User, service.owner_id)
                         
@@ -146,9 +147,9 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                                 
                             # Update the cooldown tracker
                             service.last_alert_at = now
-                            print(f"📧 [NOTIFICATION] Sent DOWN alert for {service.name}")
+                            logger.info(f"[NOTIFICATION] Dispatched DOWN alert for {service.name}")
                         else:
-                            print(f"🔇 [COOLDOWN] Suppressed DOWN alert for {service.name} (Rate Limited)")
+                            logger.info(f"[COOLDOWN] Suppressed DOWN alert for {service.name} (Rate Limited)")
 
                 else:
                     service.failure_count = 0
@@ -157,11 +158,11 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                     if open_incident:
                         open_incident.is_open = False
                         open_incident.resolved_at = now
-                        print(f"✅ [RESOLVED] Incident closed for {service.name}")
+                        logger.info(f"[RESOLVED] Incident closed for {service.name}")
                         
                         owner = await db.get(User, service.owner_id)
                         
-                        # FIX: Removed `can_alert` requirement here. Recovery messages ALWAYS send!
+                        # Recovery messages ALWAYS send!
                         if owner:
                             recovery_msg = f"✅ Sentinel Recovery: {service.name} is back UP."
                             
@@ -176,12 +177,12 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                             
                             # Reset the cooldown tracker after a successful recovery
                             service.last_alert_at = now
-                            print(f"📧 [NOTIFICATION] Sent UP recovery alert for {service.name}")
+                            logger.info(f"[NOTIFICATION] Dispatched UP recovery alert for {service.name}")
                         else:
-                            print(f"🔇 [COOLDOWN] Suppressed UP recovery alert for {service.name} (Rate Limited)")
+                            logger.info(f"[COOLDOWN] Suppressed UP recovery alert for {service.name} (Rate Limited)")
                 
                 status_text = "UP" if is_up else "DOWN"
-                print(f"[{now.strftime('%H:%M:%S')}] {service.name} | {status_text} | {latency}ms")
+                logger.info(f"Check: {service.name} | {status_text} | {latency}ms")
                 
                 await db.commit()
 
@@ -233,10 +234,10 @@ async def run_monitoring_cycle():
                     cleanup_counter = 0
                     
             except Exception as e:
-                print(f"Scheduler error: {e}")
+                logger.error(f"Scheduler loop error: {e}")
                 
             await asyncio.sleep(2)
 
 if __name__ == "__main__":
-    print("🚀 Sentinel Background Worker Started")
+    logger.info("🚀 Sentinel Background Worker Initialized")
     asyncio.run(run_monitoring_cycle())

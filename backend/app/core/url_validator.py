@@ -14,6 +14,22 @@ BLOCKED_HOSTNAMES = {
     "instance-data",
 }
 
+NAT64_PREFIX = ipaddress.IPv6Network("64:ff9b::/96")
+
+def is_ip_restricted(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    """Checks if an IP is private, loopback, metadata, or reserved, with NAT64 awareness."""
+    if isinstance(ip, ipaddress.IPv6Address) and ip in NAT64_PREFIX:
+        ipv4_int = int(ip) & 0xFFFFFFFF
+        return is_ip_restricted(ipaddress.IPv4Address(ipv4_int))
+    return (
+        ip.is_private
+        or ip.is_loopback
+        or ip.is_link_local
+        or ip.is_multicast
+        or str(ip) == "169.254.169.254"
+        or ip.is_reserved
+    )
+
 def validate_safe_url(url_str: str, allow_http: bool = True) -> str:
     """
     Strict SSRF validation:
@@ -43,10 +59,8 @@ def validate_safe_url(url_str: str, allow_http: bool = True) -> str:
     # 1. Check if hostname is directly an IP address
     try:
         ip = ipaddress.ip_address(hostname)
-        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_multicast:
+        if is_ip_restricted(ip):
             raise ValueError(f"Targeting internal/private IP address ({ip}) is not permitted.")
-        if str(ip) == "169.254.169.254":
-            raise ValueError("Targeting cloud metadata endpoint is not permitted.")
         return cleaned
     except ValueError as e:
         if "not permitted" in str(e):
@@ -58,14 +72,7 @@ def validate_safe_url(url_str: str, allow_http: bool = True) -> str:
         for _, _, _, _, sockaddr in addr_info:
             resolved_ip_str = sockaddr[0]
             resolved_ip = ipaddress.ip_address(resolved_ip_str)
-            if (
-                resolved_ip.is_private
-                or resolved_ip.is_loopback
-                or resolved_ip.is_link_local
-                or resolved_ip.is_reserved
-                or resolved_ip.is_multicast
-                or str(resolved_ip) == "169.254.169.254"
-            ):
+            if is_ip_restricted(resolved_ip):
                 raise ValueError(f"Target domain resolves to restricted internal address ({resolved_ip_str}).")
     except (socket.gaierror, socket.herror):
         # If domain cannot be resolved at definition time, allow it to permit newly registered/offline domains

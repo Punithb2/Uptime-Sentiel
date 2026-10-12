@@ -7,12 +7,14 @@ from dotenv import load_dotenv
 # Load variables from the .env file into the environment
 load_dotenv()
 
+from app.core.logger import logger
+
 def send_email_sync(to_email: str, subject: str, body: str):
     sender_email = os.getenv("SMTP_EMAIL")
     sender_password = os.getenv("SMTP_PASSWORD")
     
     if not sender_email or not sender_password:
-        print("Skipping email alert: SMTP credentials not found in .env")
+        logger.warning("Skipping email alert: SMTP credentials not found in environment.")
         return
 
     msg = EmailMessage()
@@ -26,9 +28,9 @@ def send_email_sync(to_email: str, subject: str, body: str):
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
             server.login(sender_email, sender_password)
             server.send_message(msg)
-        print(f"📧 Alert email successfully sent to {to_email}")
+        logger.info(f"Alert email successfully delivered to {to_email}")
     except Exception as e:
-        print(f"❌ Failed to send email: {e}")
+        logger.error(f"Failed to send alert email to {to_email}: {e}")
 
 async def send_alert_email(to_email: str, subject: str, body: str):
     # Offload the synchronous SMTP network call to a background thread

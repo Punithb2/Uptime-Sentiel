@@ -5,6 +5,7 @@ import Layout from './components/Layout';
 import { ToastProvider } from './components/Toast';
 import { RouteSkeleton } from './components/Skeletons';
 import { ThemeProvider } from './components/ThemeProvider';
+import { ErrorBoundary } from './components/ErrorBoundary';
 
 // 1. Lazy load all pages so they only download when the user clicks them
 const Auth = lazy(() => import('./pages/Auth'));
@@ -47,31 +48,33 @@ const NotFound = () => (
 
 export default function App() {
   return (
-    <QueryClientProvider client={queryClient}>
-      <ThemeProvider>
-      <ToastProvider>
-      <BrowserRouter>
-        {/* Wrap Routes in Suspense to handle the lazy loading state */}
-        <Suspense fallback={<RouteSkeleton />}>
-          <Routes>
-            <Route path="/" element={<Auth />} />
-            <Route path="/status/:slug" element={<PublicStatus />} />
-            
-            <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
-              <Route path="/dashboard" element={<Dashboard />} />
-              <Route path="/monitors" element={<Monitors />} />
-              <Route path="/monitors/:id" element={<MonitorDetails />} />
-              <Route path="/incidents" element={<Incidents />} />
-              <Route path="/settings" element={<Settings />} />
-            </Route>
+    <ErrorBoundary>
+      <QueryClientProvider client={queryClient}>
+        <ThemeProvider>
+        <ToastProvider>
+        <BrowserRouter>
+          {/* Wrap Routes in Suspense to handle the lazy loading state */}
+          <Suspense fallback={<RouteSkeleton />}>
+            <Routes>
+              <Route path="/" element={<Auth />} />
+              <Route path="/status/:slug" element={<PublicStatus />} />
+              
+              <Route element={<ProtectedRoute><Layout /></ProtectedRoute>}>
+                <Route path="/dashboard" element={<Dashboard />} />
+                <Route path="/monitors" element={<Monitors />} />
+                <Route path="/monitors/:id" element={<MonitorDetails />} />
+                <Route path="/incidents" element={<Incidents />} />
+                <Route path="/settings" element={<Settings />} />
+              </Route>
 
-            {/* 3. The Catch-all Route for unknown URLs */}
-            <Route path="*" element={<NotFound />} />
-          </Routes>
-        </Suspense>
-      </BrowserRouter>
-      </ToastProvider>
-      </ThemeProvider>
-    </QueryClientProvider>
+              {/* 3. The Catch-all Route for unknown URLs */}
+              <Route path="*" element={<NotFound />} />
+            </Routes>
+          </Suspense>
+        </BrowserRouter>
+        </ToastProvider>
+        </ThemeProvider>
+      </QueryClientProvider>
+    </ErrorBoundary>
   );
 }
