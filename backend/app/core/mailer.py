@@ -25,7 +25,6 @@ def _send_email_smtp_sync(to_email: str, subject: str, body: str):
     msg["To"] = to_email
 
     try:
-        # Timeout at 10 seconds to avoid hanging on blocked ports
         with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=10) as server:
             server.login(sender_email, sender_password)
             server.send_message(msg)
@@ -35,12 +34,43 @@ def _send_email_smtp_sync(to_email: str, subject: str, body: str):
 
 async def send_alert_email(to_email: str, subject: str, body: str):
     """
-    Sends alert emails.
-    Prioritizes HTTPS API (Resend) on port 443 to bypass cloud provider SMTP blocks (e.g. Render free tier).
-    Falls back to SMTP if RESEND_API_KEY is not configured.
+    Sends alert emails over HTTPS port 443 to bypass cloud provider SMTP blocks (Render free tier).
+    Supports:
+    1. Brevo HTTPS API: Free, 300 emails/day to ANY recipient without owning a custom domain!
+    2. Resend HTTPS API: Requires custom domain (or sends only to account owner with onboarding@resend.dev).
+    3. SMTP fallback: For local development.
     """
+    # 1. Brevo (Best option without a custom domain - sends to anyone with just verified personal email)
+    brevo_api_key = os.getenv("BREVO_API_KEY")
+    if brevo_api_key:
+        sender_email = os.getenv("BREVO_SENDER_EMAIL", os.getenv("SMTP_EMAIL"))
+        if not sender_email:
+            logger.warning("Brevo configured without BREVO_SENDER_EMAIL. Set your verified email.")
+            return
+
+        payload = {
+            "sender": {"name": "UptimeSentinel", "email": sender_email.strip()},
+            "to": [{"email": to_email}],
+            "subject": subject,
+            "textContent": body
+        }
+        headers = {
+            "api-key": brevo_api_key.strip(),
+            "Content-Type": "application/json"
+        }
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.post("https://api.brevo.com/v3/smtp/email", json=payload, headers=headers)
+                if response.status_code in (200, 201):
+                    logger.info(f"Alert email successfully dispatched to {to_email} via Brevo HTTPS API")
+                else:
+                    logger.error(f"Brevo HTTPS email failed ({response.status_code}): {response.text}")
+        except Exception as e:
+            logger.error(f"Brevo HTTPS email error to {to_email}: {e}")
+        return
+
+    # 2. Resend (Requires custom domain to send to arbitrary third-party emails)
     resend_api_key = os.getenv("RESEND_API_KEY")
-    
     if resend_api_key:
         resend_from = os.getenv("RESEND_FROM_EMAIL", "UptimeSentinel <onboarding@resend.dev>")
         payload = {
@@ -64,8 +94,8 @@ async def send_alert_email(to_email: str, subject: str, body: str):
             logger.error(f"HTTPS email delivery error to {to_email}: {e}")
         return
 
-    # Fallback to local SMTP if configured
+    # 3. Fallback to local SMTP if configured
     if os.getenv("SMTP_EMAIL") and os.getenv("SMTP_PASSWORD"):
         await asyncio.to_thread(_send_email_smtp_sync, to_email, subject, body)
     else:
-        logger.warning("Skipping email alert: Neither RESEND_API_KEY nor SMTP credentials configured.")
+        logger.warning("Skipping email alert: Neither BREVO_API_KEY, RESEND_API_KEY, nor SMTP credentials configured.")
