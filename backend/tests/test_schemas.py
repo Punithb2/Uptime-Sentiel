@@ -14,16 +14,16 @@ def test_service_blocks_destructive_http_methods():
             ServiceCreate(name="API Monitor", url="https://example.com", method=destructive)
 
 def test_service_interval_bounds():
-    # Valid interval bounds
-    s1 = ServiceCreate(name="Min Interval", url="https://example.com", check_interval_seconds=10)
-    assert s1.check_interval_seconds == 10
+    # Valid interval bounds (minimum 60s to safeguard DB storage)
+    s1 = ServiceCreate(name="Min Interval", url="https://example.com", check_interval_seconds=60)
+    assert s1.check_interval_seconds == 60
 
     s2 = ServiceCreate(name="Max Interval", url="https://example.com", check_interval_seconds=86400)
     assert s2.check_interval_seconds == 86400
 
-    # Below minimum (10s)
+    # Below minimum (60s)
     with pytest.raises(ValidationError):
-        ServiceCreate(name="Too Fast", url="https://example.com", check_interval_seconds=5)
+        ServiceCreate(name="Too Fast", url="https://example.com", check_interval_seconds=30)
 
     # Above maximum (86400s)
     with pytest.raises(ValidationError):

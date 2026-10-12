@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, ConfigDict
 from datetime import datetime
 from typing import Optional
 import re
@@ -23,6 +23,8 @@ class Token(BaseModel):
     token_type: str
 
 class UserResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
     id: int
     email: str
     role: Optional[str] = None
@@ -30,9 +32,6 @@ class UserResponse(BaseModel):
     webhook_url: Optional[str] = None
     public_slug: Optional[str] = None
     is_public_page_enabled: Optional[bool] = False
-    
-    class Config:
-        from_attributes = True
 
 class UserUpdate(BaseModel):
     webhook_url: Optional[str] = None

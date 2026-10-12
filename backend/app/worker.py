@@ -1,4 +1,10 @@
 import asyncio
+import os
+import ssl
+import socket
+import json
+import tempfile
+from urllib.parse import urlparse
 import httpx
 from datetime import datetime, timezone, timedelta
 from sqlalchemy import select, update, delete
@@ -7,12 +13,29 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import engine
 from app.models.models import Service, Check, Incident, User
 from app.core.mailer import send_alert_email
-from app.core.url_validator import validate_safe_url
+from app.core.url_validator import validate_safe_url_async
 from app.core.logger import logger
 
 MAX_CONCURRENT_CHECKS = 50
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
 _active_tasks = set()
+
+HEARTBEAT_PATH = os.path.join(tempfile.gettempdir(), "sentinel_worker_heartbeat.json")
+
+def write_heartbeat_sync():
+    """Writes a timestamped heartbeat to a local temporary file for /health monitoring."""
+    try:
+        data = {
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "pid": os.getpid()
+        }
+        with open(HEARTBEAT_PATH, "w", encoding="utf-8") as f:
+            json.dump(data, f)
+    except Exception as e:
+        logger.error(f"Failed to record worker heartbeat: {e}")
+
+async def record_heartbeat():
+    await asyncio.to_thread(write_heartbeat_sync)
 
 async def cleanup_old_checks():
     """Deletes ping history older than 30 days to prevent infinite database growth."""
@@ -31,31 +54,65 @@ async def send_webhook_alert(url: str, message: str):
     if not url: return
     try:
         # Defense-in-depth: Verify webhook is safe HTTPS and not targeting internal infrastructure
-        validate_safe_url(url, allow_http=False)
+        await validate_safe_url_async(url, allow_http=False)
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json={"content": message}, timeout=5.0)
-            response.raise_for_status() # Raises an exception if the webhook receiver rejects it!
+            response.raise_for_status()
     except Exception as e:
         logger.error(f"Webhook delivery failed to {url}: {e}")
 
+async def inspect_ssl_cert(url_str: str) -> tuple[bool | None, datetime | None]:
+    """Inspects SSL certificate expiry on HTTPS services without blocking the event loop."""
+    parsed = urlparse(url_str)
+    if parsed.scheme.lower() != "https" or not parsed.hostname:
+        return None, None
+
+    port = parsed.port or 443
+    hostname = parsed.hostname
+
+    def _sync_ssl():
+        try:
+            ctx = ssl.create_default_context()
+            with socket.create_connection((hostname, port), timeout=4.0) as sock:
+                with ctx.wrap_socket(sock, server_hostname=hostname) as ssock:
+                    cert = ssock.getpeercert()
+                    not_after_str = cert.get("notAfter")
+                    if not_after_str:
+                        # e.g. "May 20 12:00:00 2026 GMT"
+                        expires_at = datetime.strptime(not_after_str, "%b %d %H:%M:%S %Y %Z").replace(tzinfo=timezone.utc)
+                        is_valid = expires_at > datetime.now(timezone.utc)
+                        return is_valid, expires_at
+            return True, None
+        except Exception:
+            return False, None
+
+    try:
+        return await asyncio.to_thread(_sync_ssl)
+    except Exception:
+        return None, None
+
 async def ping_service(client: httpx.AsyncClient, service_id: int):
-    """Runs an individual check with dynamic configurations and guaranteed cleanup."""
+    """Runs an individual check with commit-first notifications and sanitized logging."""
     try:
         async with semaphore:
             start_time = datetime.now(timezone.utc)
             is_up = False
             status_code = None
             error_message = None
+            ssl_valid = None
+            ssl_expires_at = None
             
-            # Prevent SQLAlchemy from expiring the service object after commit
+            # Notifications queued to dispatch strictly AFTER DB commit
+            dispatches = []
+
             async with AsyncSession(engine, expire_on_commit=False) as db:
                 service = await db.get(Service, service_id)
                 if not service:
                     return
 
                 try:
-                    # Defense-in-depth: Ensure target URL is not pointing to private networks or metadata
-                    validate_safe_url(service.url, allow_http=True)
+                    # Non-blocking async DNS and SSRF validation
+                    await validate_safe_url_async(service.url, allow_http=True)
                     
                     method = service.method or "GET"
                     headers = service.headers or {}
@@ -78,13 +135,19 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                     else:
                         is_up = 200 <= status_code < 400
                     
-                    # Capture the exact server error message if it fails
+                    # Sanitize error message: Store HTTP status and standard reason only.
+                    # NEVER store response.text to prevent data leaks / internal info exposure.
                     if not is_up:
-                        error_message = f"HTTP {status_code}: {response.text[:255]}"
+                        reason = getattr(response, "reason_phrase", "") or "Unsuccessful status"
+                        error_message = f"HTTP {status_code} ({reason})"
                         
                 except Exception as e:
                     is_up = False
-                    error_message = str(e)
+                    error_message = e.__class__.__name__
+
+                # Check SSL expiry for HTTPS services
+                if service.url.startswith("https://"):
+                    ssl_valid, ssl_expires_at = await inspect_ssl_cert(service.url)
                     
                 end_time = datetime.now(timezone.utc)
                 latency = int((end_time - start_time).total_seconds() * 1000)
@@ -99,7 +162,9 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                     status="UP" if is_up else "DOWN",
                     status_code=status_code,
                     latency_ms=latency,
-                    error_message=error_message
+                    error_message=error_message,
+                    ssl_valid=ssl_valid,
+                    ssl_expires_at=ssl_expires_at
                 )
                 db.add(new_check)
 
@@ -108,12 +173,11 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                 service.last_status_code = status_code
                 service.next_check_at = end_time + timedelta(seconds=service.check_interval_seconds)
 
-                # --- NEW: Cooldown Logic ---
-                # Allow a new alert if it has been at least 15 minutes since the last one, or if no alert has ever been sent.
+                # Cooldown check: 15 minutes between alert notifications
                 now = datetime.now(timezone.utc)
                 can_alert = (
                     service.last_alert_at is None or 
-                    (now - service.last_alert_at).total_seconds() > 900 # 900 seconds = 15 mins
+                    (now - service.last_alert_at).total_seconds() > 900
                 )
 
                 if not is_up:
@@ -121,33 +185,29 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                     service.status = "DOWN"
                     
                     if not open_incident and service.failure_count >= service.failure_threshold:
+                        cause_text = error_message or f"HTTP {status_code}"
                         new_incident = Incident(
                             service_id=service_id,
                             started_at=now,
                             is_open=True,
-                            cause=error_message or f"HTTP {status_code}"
+                            cause=cause_text
                         )
                         db.add(new_incident)
-                        logger.warning(f"[ALERT] Incident opened for {service.name} (cause: {new_incident.cause})")
+                        logger.warning(f"[ALERT] Incident opened for {service.name} (cause: {cause_text})")
                         
                         owner = await db.get(User, service.owner_id)
                         
-                        # Only send email/webhook if the cooldown has passed
                         if owner and can_alert:
-                            alert_msg = f"🚨 Sentinel Alert: {service.name} is DOWN. ({new_incident.cause})"
-                            
-                            await send_alert_email(
-                                owner.email, 
-                                f"🚨 Sentinel Alert: {service.name} is DOWN", 
-                                f"Your service '{service.name}' ({service.url}) is down.\n\nError: {new_incident.cause}\nTime: {new_incident.started_at}"
-                            )
-                            
-                            if owner.webhook_url:
-                                await send_webhook_alert(owner.webhook_url, alert_msg)
-                                
-                            # Update the cooldown tracker
                             service.last_alert_at = now
-                            logger.info(f"[NOTIFICATION] Dispatched DOWN alert for {service.name}")
+                            dispatches.append({
+                                "type": "DOWN",
+                                "email": owner.email,
+                                "webhook_url": owner.webhook_url,
+                                "service_name": service.name,
+                                "url": service.url,
+                                "cause": cause_text,
+                                "time": str(new_incident.started_at)
+                            })
                         else:
                             logger.info(f"[COOLDOWN] Suppressed DOWN alert for {service.name} (Rate Limited)")
 
@@ -160,44 +220,61 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                         open_incident.resolved_at = now
                         logger.info(f"[RESOLVED] Incident closed for {service.name}")
                         
-                        owner = await db.get(User, service.owner_id)
+                        # FIX: On recovery, reset cooldown by setting last_alert_at = None!
+                        # Setting to None ensures future incidents immediately notify without waiting 15 mins.
+                        service.last_alert_at = None
                         
-                        # Recovery messages ALWAYS send!
+                        owner = await db.get(User, service.owner_id)
                         if owner:
-                            recovery_msg = f"✅ Sentinel Recovery: {service.name} is back UP."
-                            
-                            await send_alert_email(
-                                owner.email, 
-                                f"✅ Sentinel Recovery: {service.name} is UP", 
-                                f"Your service '{service.name}' ({service.url}) has recovered."
-                            )
-                            
-                            if owner.webhook_url:
-                                await send_webhook_alert(owner.webhook_url, recovery_msg)
-                            
-                            # Reset the cooldown tracker after a successful recovery
-                            service.last_alert_at = now
-                            logger.info(f"[NOTIFICATION] Dispatched UP recovery alert for {service.name}")
-                        else:
-                            logger.info(f"[COOLDOWN] Suppressed UP recovery alert for {service.name} (Rate Limited)")
-                
+                            dispatches.append({
+                                "type": "UP",
+                                "email": owner.email,
+                                "webhook_url": owner.webhook_url,
+                                "service_name": service.name,
+                                "url": service.url
+                            })
+
                 status_text = "UP" if is_up else "DOWN"
                 logger.info(f"Check: {service.name} | {status_text} | {latency}ms")
                 
+                # CRITICAL: Commit to DB first before firing external network calls!
                 await db.commit()
 
+            # DISPATCH NOTIFICATIONS AFTER COMMIT
+            for action in dispatches:
+                try:
+                    if action["type"] == "DOWN":
+                        alert_msg = f"🚨 Sentinel Alert: {action['service_name']} is DOWN. ({action['cause']})"
+                        email_body = f"Your service '{action['service_name']}' ({action['url']}) is down.\n\nReason: {action['cause']}\nTime: {action['time']}"
+                        await send_alert_email(action["email"], f"🚨 Sentinel Alert: {action['service_name']} is DOWN", email_body)
+                        if action["webhook_url"]:
+                            await send_webhook_alert(action["webhook_url"], alert_msg)
+                        logger.info(f"[NOTIFICATION] Dispatched DOWN alert for {action['service_name']}")
+
+                    elif action["type"] == "UP":
+                        recovery_msg = f"✅ Sentinel Recovery: {action['service_name']} is back UP."
+                        email_body = f"Your service '{action['service_name']}' ({action['url']}) has recovered and is healthy."
+                        await send_alert_email(action["email"], f"✅ Sentinel Recovery: {action['service_name']} is UP", email_body)
+                        if action["webhook_url"]:
+                            await send_webhook_alert(action["webhook_url"], recovery_msg)
+                        logger.info(f"[NOTIFICATION] Dispatched UP recovery alert for {action['service_name']}")
+                except Exception as notify_err:
+                    logger.error(f"Notification dispatch failure for {action.get('service_name')}: {notify_err}")
+
     except Exception as e:
-        print(f"❌ Monitor check failed for service {service_id}: {e}")
+        logger.error(f"❌ Monitor check failed for service {service_id}: {e}")
     finally:
         _active_tasks.discard(service_id)
 
-
 async def run_monitoring_cycle():
-    """Scheduler loop utilizing atomic DB locking for multi-instance safety."""
+    """Scheduler loop with atomic DB locking and vitality heartbeat."""
     cleanup_counter = 0
     async with httpx.AsyncClient() as client:
         while True:
             try:
+                # 1. Update heartbeat timestamp every cycle
+                await record_heartbeat()
+
                 now = datetime.now(timezone.utc)
                 due_service_ids = []
                 
@@ -217,7 +294,6 @@ async def run_monitoring_cycle():
                         await db.execute(
                             update(Service)
                             .where(Service.id.in_(due_service_ids))
-                            # Enforce a 65-second lease lock to avoid race conditions with slow timeouts
                             .values(next_check_at=now + timedelta(seconds=65))
                         )
                         await db.commit()

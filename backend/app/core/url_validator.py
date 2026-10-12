@@ -79,3 +79,52 @@ def validate_safe_url(url_str: str, allow_http: bool = True) -> str:
         pass
 
     return cleaned
+
+async def validate_safe_url_async(url_str: str, allow_http: bool = True) -> str:
+    """
+    Non-blocking async SSRF validation for runtime monitor checks:
+    Uses asyncio loop.getaddrinfo to avoid blocking the single-threaded event loop on DNS lookups.
+    """
+    import asyncio
+    if not url_str or not isinstance(url_str, str):
+        raise ValueError("URL must be a non-empty string.")
+
+    cleaned = url_str.strip()
+    parsed = urlparse(cleaned)
+
+    allowed_schemes = ("http", "https") if allow_http else ("https",)
+    if parsed.scheme not in allowed_schemes:
+        raise ValueError(f"URL scheme must be {' or '.join(allowed_schemes).upper()}.")
+
+    hostname = parsed.hostname
+    if not hostname:
+        raise ValueError("URL hostname is invalid or missing.")
+
+    hostname_lower = hostname.lower()
+    if hostname_lower in BLOCKED_HOSTNAMES or hostname_lower.endswith(".internal") or hostname_lower.endswith(".local"):
+        raise ValueError(f"Internal host '{hostname}' cannot be targeted.")
+
+    # 1. Direct IP check
+    try:
+        ip = ipaddress.ip_address(hostname)
+        if is_ip_restricted(ip):
+            raise ValueError(f"Targeting internal/private IP address ({ip}) is not permitted.")
+        return cleaned
+    except ValueError as e:
+        if "not permitted" in str(e):
+            raise
+
+    # 2. Asynchronous non-blocking DNS resolution
+    try:
+        loop = asyncio.get_running_loop()
+        addr_info = await loop.getaddrinfo(hostname, None)
+        for _, _, _, _, sockaddr in addr_info:
+            resolved_ip_str = sockaddr[0]
+            resolved_ip = ipaddress.ip_address(resolved_ip_str)
+            if is_ip_restricted(resolved_ip):
+                raise ValueError(f"Target domain resolves to restricted internal address ({resolved_ip_str}).")
+    except (socket.gaierror, socket.herror):
+        pass
+
+    return cleaned
+

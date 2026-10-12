@@ -14,18 +14,30 @@ ALGORITHM = "HS256"
 # Tells FastAPI where the frontend sends login requests (for Swagger UI and dependency injection)
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-def get_password_hash(password: str) -> str:
-    # bcrypt requires bytes, so we encode the string first
+import asyncio
+
+def _hash_sync(password: str) -> str:
     salt = bcrypt.gensalt()
     hashed_bytes = bcrypt.hashpw(password.encode('utf-8'), salt)
-    # Decode back to string to store in the database
     return hashed_bytes.decode('utf-8')
 
-def verify_password(plain_password: str, hashed_password: str) -> bool:
+def _verify_sync(plain_password: str, hashed_password: str) -> bool:
     return bcrypt.checkpw(
         plain_password.encode('utf-8'), 
         hashed_password.encode('utf-8')
     )
+
+async def get_password_hash(password: str) -> str:
+    """Non-blocking async password hashing via worker thread."""
+    return await asyncio.to_thread(_hash_sync, password)
+
+async def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Non-blocking async password verification via worker thread."""
+    return await asyncio.to_thread(_verify_sync, plain_password, hashed_password)
+
+# Synchronous aliases for backwards compatibility
+get_password_hash_sync = _hash_sync
+verify_password_sync = _verify_sync
 
 def create_access_token(data: dict, expires_delta: timedelta = None) -> str:
     to_encode = data.copy()

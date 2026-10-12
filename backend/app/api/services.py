@@ -3,6 +3,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, case
 from typing import List
 from datetime import datetime, timezone, timedelta
+from collections import defaultdict
 
 from app.core.database import get_db
 from app.models.models import Service, User, Check, Incident
@@ -10,9 +11,11 @@ from app.schemas.service import (
     ServiceCreate, ServiceResponse, ServiceStatusResponse, 
     DashboardSummaryResponse, ServiceUpdate, GlobalIncidentResponse
 )
-from app.api.auth import get_current_user
+from app.core.security import get_current_user
 
 router = APIRouter(prefix="/services", tags=["Services"])
+
+MAX_MONITORS_PER_USER = 15
 
 @router.post("/", response_model=ServiceResponse, status_code=status.HTTP_201_CREATED)
 async def create_service(
@@ -20,6 +23,17 @@ async def create_service(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
+    # Abuse prevention: Cap monitors per user on free tier
+    count_query = await db.execute(
+        select(func.count(Service.id)).where(Service.owner_id == current_user.id)
+    )
+    current_count = count_query.scalar() or 0
+    if current_count >= MAX_MONITORS_PER_USER:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Monitor quota reached. Accounts are limited to {MAX_MONITORS_PER_USER} monitors."
+        )
+
     new_service = Service(
         owner_id=current_user.id,
         name=service_data.name,
@@ -42,7 +56,7 @@ async def get_services(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Only fetch services belonging to the logged-in user
+    # Multi-tenant isolation: Only fetch services owned by the current user
     result = await db.execute(
         select(Service).where(Service.owner_id == current_user.id)
     )
@@ -54,7 +68,7 @@ async def delete_service(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Verify the service exists AND belongs to the user
+    # Multi-tenant isolation: 404 if service does not exist or belongs to another user
     result = await db.execute(
         select(Service).where(
             Service.id == service_id, 
@@ -77,7 +91,7 @@ async def get_service_checks(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # 1. Verify the user actually owns this service
+    # Multi-tenant check
     service_result = await db.execute(
         select(Service).where(
             Service.id == service_id, 
@@ -87,7 +101,6 @@ async def get_service_checks(
     if not service_result.scalars().first():
         raise HTTPException(status_code=404, detail="Service not found or unauthorized")
 
-    # 2. Fetch the most recent checks for this service (safely capped between 1 and 100)
     safe_limit = min(max(1, limit), 100)
     checks_result = await db.execute(
         select(Check)
@@ -97,13 +110,11 @@ async def get_service_checks(
     )
     raw_checks = checks_result.scalars().all()
 
-    # 3. Calculate a basic uptime percentage based on the fetched checks
     uptime_percentage = 100.0
     if raw_checks:
         up_count = sum(1 for c in raw_checks if c.status == "UP")
         uptime_percentage = round((up_count / len(raw_checks)) * 100, 2)
     
-    # 4. Serialize manually to prevent Pydantic errors
     serialized_checks = [
         {
             "id": check.id,
@@ -111,12 +122,13 @@ async def get_service_checks(
             "status": check.status,
             "status_code": check.status_code,
             "latency_ms": check.latency_ms,
-            "error_message": check.error_message
+            "error_message": check.error_message,
+            "ssl_valid": check.ssl_valid,
+            "ssl_expires_at": check.ssl_expires_at
         }
         for check in raw_checks
     ]
 
-    # 5. Fetch recent incidents
     incidents_result = await db.execute(
         select(Incident)
         .where(Incident.service_id == service_id)
@@ -147,7 +159,7 @@ async def get_dashboard_summary(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Fetches dashboard summary, optimized to avoid N+1 queries, with accurate 24h uptime."""
+    """Fetches dashboard summary, fully optimized to eliminate N+1 queries."""
     services_query = await db.execute(select(Service).where(Service.owner_id == current_user.id))
     services = services_query.scalars().all()
     
@@ -175,23 +187,40 @@ async def get_dashboard_summary(
     )
     active_incidents = {inc.service_id: inc for inc in incidents_query.scalars().all()}
     
+    # 3. Batch fetch recent sparkline checks in a SINGLE query (eliminates N+1 loop)
+    # Using window function row_number() over (partition by service_id order by checked_at desc)
+    rn_col = func.row_number().over(
+        partition_by=Check.service_id,
+        order_by=desc(Check.checked_at)
+    ).label("row_num")
+
+    ranked_subq = (
+        select(Check.id, Check.service_id, rn_col)
+        .where(Check.service_id.in_(service_ids))
+        .subquery()
+    )
+
+    batch_checks_query = await db.execute(
+        select(Check)
+        .join(ranked_subq, Check.id == ranked_subq.c.id)
+        .where(ranked_subq.c.row_num <= 30)
+        .order_by(Check.service_id, desc(Check.checked_at))
+    )
+    
+    recent_checks_by_service = defaultdict(list)
+    for check_obj in batch_checks_query.scalars().all():
+        recent_checks_by_service[check_obj.service_id].append(check_obj)
+
     service_summaries = []
     up_count = down_count = paused_count = pending_count = total_latency = latency_services = 0
         
     for service in services:
-        # Calculate true 24h uptime percentage
         stats = uptime_stats.get(service.id, {"total": 0, "up": 0})
         if stats["total"] > 0:
             uptime_pct = round((stats["up"] / stats["total"]) * 100, 2)
         else:
             uptime_pct = 100.0 if service.status != "DOWN" else 0.0
 
-        # Fetch recent 30 checks just for the UI sparkline chart
-        recent_checks_query = await db.execute(
-            select(Check).where(Check.service_id == service.id).order_by(desc(Check.checked_at)).limit(30)
-        )
-            
-        # Tally statuses including PENDING
         if service.status == "UP": up_count += 1
         elif service.status == "DOWN": down_count += 1
         elif service.status == "PAUSED": paused_count += 1
@@ -204,7 +233,7 @@ async def get_dashboard_summary(
         service_summaries.append({
             "service": service,
             "uptime_percentage": uptime_pct,
-            "recent_checks": recent_checks_query.scalars().all(),
+            "recent_checks": recent_checks_by_service[service.id],
             "active_incident": active_incidents.get(service.id)
         })
 
@@ -224,14 +253,13 @@ async def get_all_incidents(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Fetches a chronological timeline of all incidents across all the user's services."""
-    # Join Incidents with Services to ensure we only get incidents for this user's monitors
+    """Fetches a chronological timeline of incidents across all the user's services."""
     query = (
         select(Incident, Service)
         .join(Service, Incident.service_id == Service.id)
         .where(Service.owner_id == current_user.id)
         .order_by(desc(Incident.started_at))
-        .limit(100) # Keep payload light, fetch last 100
+        .limit(100)
     )
     
     result = await db.execute(query)
@@ -261,7 +289,6 @@ async def trigger_immediate_check(
     if not service or service.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail="Service not found")
     
-    # Pushing next_check_at to now forces the worker to pick it up instantly
     service.next_check_at = datetime.now(timezone.utc)
     service.is_active = True
     await db.commit()
@@ -335,15 +362,13 @@ async def update_service(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    """Allows users to edit an existing monitor's basic and advanced settings."""
+    """Allows users to edit an existing monitor's settings."""
     service = await db.get(Service, service_id)
     if not service or service.owner_id != current_user.id:
         raise HTTPException(status_code=404, detail="Service not found")
     
-    # Apply updates if they were provided in the request
     update_dict = update_data.model_dump(exclude_unset=True)
     for key, value in update_dict.items():
-        # If the user provides a string URL, convert it via the Pydantic HttpUrl validation
         if key == "url":
             setattr(service, key, str(value))
         else:
@@ -374,20 +399,21 @@ async def toggle_service_visibility(
 
 @router.get("/status/public/{slug}")
 async def get_public_status_page(slug: str, db: AsyncSession = Depends(get_db)):
-    """Unauthenticated endpoint to display a user's public status page via a secure random slug."""
-    # 1. Lookup user by slug and verify the page is enabled globally
+    """
+    Unauthenticated public status page.
+    Sanitizes incidents to ensure internal causes / debug responses are never leaked publicly.
+    """
     user_query = await db.execute(select(User).where(User.public_slug == slug))
     user = user_query.scalars().first()
 
     if not user or not user.is_public_page_enabled:
         raise HTTPException(status_code=404, detail="Public status page not found or is disabled.")
 
-    # 2. Fetch only ACTIVE and PUBLIC services for this user
     services_query = await db.execute(
         select(Service).where(
             Service.owner_id == user.id, 
             Service.is_active == True,
-            Service.is_public == True  # ENFORCE: Individual monitor privacy
+            Service.is_public == True
         )
     )
     services = services_query.scalars().all()
@@ -398,7 +424,6 @@ async def get_public_status_page(slug: str, db: AsyncSession = Depends(get_db)):
     service_ids = [s.id for s in services]
     twenty_four_hours_ago = datetime.now(timezone.utc) - timedelta(hours=24)
     
-    # Batch 24h uptime
     stats_query = await db.execute(
         select(
             Check.service_id,
@@ -410,7 +435,6 @@ async def get_public_status_page(slug: str, db: AsyncSession = Depends(get_db)):
     )
     uptime_stats = {row.service_id: {"total": row.total, "up": row.up_count} for row in stats_query.all()}
     
-    # Batch Recent Incidents
     incidents_query = await db.execute(
         select(Incident)
         .where(Incident.service_id.in_(service_ids))
@@ -431,8 +455,20 @@ async def get_public_status_page(slug: str, db: AsyncSession = Depends(get_db)):
             "uptime_24h": uptime_pct,
             "last_checked_at": service.last_checked_at
         })
+
+    # Sanitize incidents: Do NOT expose internal debug error strings
+    sanitized_incidents = [
+        {
+            "id": inc.id,
+            "is_open": inc.is_open,
+            "started_at": inc.started_at,
+            "resolved_at": inc.resolved_at,
+            "status": "Service Outage" if inc.is_open else "Resolved Outage"
+        }
+        for inc in all_incidents
+    ]
         
     return {
         "services": service_data,
-        "incidents": all_incidents
+        "incidents": sanitized_incidents
     }

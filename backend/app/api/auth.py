@@ -1,24 +1,49 @@
-from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+import time
+from collections import defaultdict
+from fastapi import APIRouter, Depends, HTTPException, status, Request
+from fastapi.security import OAuth2PasswordRequestForm
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
-import jwt
-import urllib.parse
-import uuid
 
 from app.core.database import get_db
-from app.core.config import settings
-from app.core.security import get_password_hash, verify_password, create_access_token, get_current_user, ALGORITHM
+from app.core.security import (
+    get_password_hash, 
+    verify_password, 
+    create_access_token, 
+    get_current_user, # Imported from core.security - single source of truth
+    oauth2_scheme
+)
 from app.models.models import User, Service, Check, Incident
 from app.schemas.user import UserCreate, Token, UserResponse, UserUpdate
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-# This tells FastAPI where the login endpoint is for the Swagger UI
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
+# In-memory sliding window rate limiter to prevent brute-force attacks on auth
+_rate_limits = defaultdict(list)
+
+def enforce_auth_rate_limit(request: Request, max_requests: int = 10, window_seconds: int = 60):
+    """Restricts authentication attempts per IP within a sliding time window."""
+    client_ip = request.client.host if request.client else "unknown"
+    now = time.time()
+    
+    # Filter out entries outside the window
+    valid_timestamps = [t for t in _rate_limits[client_ip] if now - t < window_seconds]
+    if len(valid_timestamps) >= max_requests:
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="Too many authentication attempts. Please slow down and try again shortly."
+        )
+    valid_timestamps.append(now)
+    _rate_limits[client_ip] = valid_timestamps
 
 @router.post("/register", response_model=Token)
-async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
+async def register(
+    user_data: UserCreate, 
+    request: Request,
+    db: AsyncSession = Depends(get_db)
+):
+    enforce_auth_rate_limit(request, max_requests=5, window_seconds=60)
+    
     result = await db.execute(select(User).where(User.email == user_data.email))
     if result.scalars().first():
         raise HTTPException(
@@ -26,9 +51,10 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
             detail="Email already registered"
         )
     
+    hashed_pwd = await get_password_hash(user_data.password)
     new_user = User(
         email=user_data.email,
-        hashed_password=get_password_hash(user_data.password)
+        hashed_password=hashed_pwd
     )
     db.add(new_user)
     await db.commit()
@@ -39,33 +65,25 @@ async def register(user_data: UserCreate, db: AsyncSession = Depends(get_db)):
     return {"access_token": access_token, "token_type": "bearer"}
 
 @router.post("/login", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
-    # Find user by email (OAuth2 form uses 'username' field for email)
+async def login(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(), 
+    db: AsyncSession = Depends(get_db)
+):
+    enforce_auth_rate_limit(request, max_requests=10, window_seconds=60)
+    
     result = await db.execute(select(User).where(User.email == form_data.username))
     user = result.scalars().first()
     
-    if not user or not verify_password(form_data.password, user.hashed_password):
+    if not user:
         raise HTTPException(status_code=400, detail="Incorrect email or password")
         
-    # Generate JWT
+    is_valid = await verify_password(form_data.password, user.hashed_password)
+    if not is_valid:
+        raise HTTPException(status_code=400, detail="Incorrect email or password")
+        
     access_token = create_access_token(data={"sub": str(user.id)})
     return {"access_token": access_token, "token_type": "bearer"}
-
-# Dependency to get the logged-in user for protected routes
-async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):
-    try:
-        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
-        user_id: str = payload.get("sub")
-        if user_id is None:
-            raise HTTPException(status_code=401, detail="Invalid token")
-    except Exception:
-        raise HTTPException(status_code=401, detail="Invalid token")
-        
-    result = await db.execute(select(User).where(User.id == int(user_id)))
-    user = result.scalars().first()
-    if user is None:
-        raise HTTPException(status_code=401, detail="User not found")
-    return user
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_profile(current_user: User = Depends(get_current_user)):
@@ -79,7 +97,7 @@ async def update_user_profile(
     current_user: User = Depends(get_current_user)
 ):
     """Updates the user's settings, including webhooks, email, and password."""
-    # 1. Update Webhook (SSRF protection already validated via Pydantic UserUpdate schema)
+    # 1. Update Webhook
     if update_data.webhook_url is not None:
         current_user.webhook_url = update_data.webhook_url.strip() if update_data.webhook_url else None
         
@@ -93,14 +111,16 @@ async def update_user_profile(
 
     # 3. Update Password
     if update_data.new_password:
-        if not update_data.current_password or not verify_password(update_data.current_password, current_user.hashed_password):
+        if not update_data.current_password:
             raise HTTPException(status_code=400, detail="Invalid current password.")
-        current_user.hashed_password = get_password_hash(update_data.new_password)
+        pwd_matches = await verify_password(update_data.current_password, current_user.hashed_password)
+        if not pwd_matches:
+            raise HTTPException(status_code=400, detail="Invalid current password.")
+        current_user.hashed_password = await get_password_hash(update_data.new_password)
 
     # 4. Update Public Page Toggle & Auto-generate Slug
     if update_data.is_public_page_enabled is not None:
         current_user.is_public_page_enabled = update_data.is_public_page_enabled
-        # Generate a random slug if they are enabling it for the first time and don't have one
         if current_user.is_public_page_enabled and not current_user.public_slug:
             import uuid
             current_user.public_slug = uuid.uuid4().hex[:12]
@@ -115,17 +135,14 @@ async def delete_user_account(
     current_user: User = Depends(get_current_user)
 ):
     """Permanently deletes the user and all their associated data."""
-    # 1. Find all services owned by the user
     services_query = await db.execute(select(Service.id).where(Service.owner_id == current_user.id))
     service_ids = services_query.scalars().all()
     
-    # 2. If they have services, cleanly delete all child records first
     if service_ids:
         await db.execute(delete(Check).where(Check.service_id.in_(service_ids)))
         await db.execute(delete(Incident).where(Incident.service_id.in_(service_ids)))
         await db.execute(delete(Service).where(Service.id.in_(service_ids)))
     
-    # 3. Delete the user
     await db.delete(current_user)
     await db.commit()
     

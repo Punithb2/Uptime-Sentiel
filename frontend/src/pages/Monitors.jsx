@@ -568,7 +568,7 @@ export default function Monitors() {
                         setIsCustomInterval(true);
                         const num = Number(customValue) || 10;
                         const mult = customUnit === 'hours' ? 3600 : customUnit === 'minutes' ? 60 : 1;
-                        setInterval(Math.max(10, Math.min(86400, num * mult)));
+                        setInterval(Math.max(60, Math.min(86400, num * mult)));
                       } else {
                         setIsCustomInterval(false);
                         setInterval(Number(e.target.value));
@@ -576,8 +576,6 @@ export default function Monitors() {
                     }}
                     className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
                   >
-                    <option value={10}>10s (High-Frequency)</option>
-                    <option value={30}>30 seconds</option>
                     <option value={60}>60 seconds (1 min)</option>
                     <option value={180}>3 minutes</option>
                     <option value={300}>5 minutes</option>
@@ -592,16 +590,16 @@ export default function Monitors() {
                     <div className="flex items-center gap-1.5 p-1.5 bg-blue-500/10 border border-blue-500/20 rounded-xl fade-enter">
                       <input
                         type="number"
-                        min={customUnit === 'seconds' ? 10 : 1}
+                        min={customUnit === 'seconds' ? 60 : 1}
                         max={customUnit === 'hours' ? 24 : customUnit === 'minutes' ? 1440 : 86400}
-                        placeholder={customUnit === 'seconds' ? 'e.g. 45' : 'e.g. 10'}
+                        placeholder={customUnit === 'seconds' ? 'e.g. 60' : 'e.g. 10'}
                         value={customValue}
                         onChange={(e) => {
                           const val = e.target.value;
                           setCustomValue(val);
                           const num = Number(val) || 0;
                           const mult = customUnit === 'hours' ? 3600 : customUnit === 'minutes' ? 60 : 1;
-                          setInterval(Math.max(10, Math.min(86400, num * mult)));
+                          setInterval(Math.max(60, Math.min(86400, num * mult)));
                         }}
                         className="w-full bg-slate-950/80 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
                       />
@@ -612,13 +610,13 @@ export default function Monitors() {
                           setCustomUnit(newUnit);
                           const num = Number(customValue) || 0;
                           const mult = newUnit === 'hours' ? 3600 : newUnit === 'minutes' ? 60 : 1;
-                          setInterval(Math.max(10, Math.min(86400, num * mult)));
+                          setInterval(Math.max(60, Math.min(86400, num * mult)));
                         }}
                         className="bg-slate-950/80 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
                       >
-                        <option value="seconds">Sec</option>
                         <option value="minutes">Min</option>
                         <option value="hours">Hours</option>
+                        <option value="seconds">Sec</option>
                       </select>
                     </div>
                   )}

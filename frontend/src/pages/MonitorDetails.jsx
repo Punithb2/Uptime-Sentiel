@@ -492,7 +492,7 @@ export default function MonitorDetails() {
                 </label>
                 <input 
                   type="number" 
-                  min="10" 
+                  min="60" 
                   max="86400"
                   value={editInterval} 
                   onChange={(e) => setEditInterval(e.target.value)} 
@@ -501,8 +501,6 @@ export default function MonitorDetails() {
                 />
                 <div className="flex flex-wrap gap-1.5 mt-2">
                   {[
-                    { label: '10s', val: 10 },
-                    { label: '30s', val: 30 },
                     { label: '1m', val: 60 },
                     { label: '3m', val: 180 },
                     { label: '5m', val: 300 },
