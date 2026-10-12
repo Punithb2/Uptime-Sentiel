@@ -234,8 +234,10 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                                 "url": service.url
                             })
 
-                status_text = "UP" if is_up else "DOWN"
-                logger.info(f"Check: {service.name} | {status_text} | {latency}ms")
+                if is_up:
+                    logger.debug(f"Check: {service.name} | UP | {latency}ms")
+                else:
+                    logger.warning(f"[FAIL] Check: {service.name} | DOWN ({error_message}) | {latency}ms")
                 
                 # CRITICAL: Commit to DB first before firing external network calls!
                 await db.commit()
