@@ -15,6 +15,14 @@ class ServiceCreate(BaseModel):
     body: Optional[str] = None
     is_public: Optional[bool] = True
 
+    @field_validator("method")
+    @classmethod
+    def validate_http_method(cls, v: str) -> str:
+        m = v.upper().strip()
+        if m not in ("GET", "HEAD", "POST"):
+            raise ValueError("Only non-destructive methods (GET, HEAD, POST) are permitted for uptime checks.")
+        return m
+
     @field_validator("url")
     @classmethod
     def validate_monitor_url(cls, v: HttpUrl) -> HttpUrl:
@@ -63,6 +71,16 @@ class ServiceUpdate(BaseModel):
     method: Optional[str] = Field(None, max_length=10)
     headers: Optional[dict] = None
     body: Optional[str] = None
+
+    @field_validator("method")
+    @classmethod
+    def validate_update_http_method(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            m = v.upper().strip()
+            if m not in ("GET", "HEAD", "POST"):
+                raise ValueError("Only non-destructive methods (GET, HEAD, POST) are permitted for uptime checks.")
+            return m
+        return v
 
     @field_validator("url")
     @classmethod

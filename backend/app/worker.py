@@ -66,7 +66,7 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                         "headers": headers
                     }
                     
-                    if service.body and method.upper() in ["POST", "PUT", "PATCH"]:
+                    if service.body and method.upper() == "POST":
                         request_kwargs["content"] = service.body.encode('utf-8')
 
                     response = await client.request(**request_kwargs)
