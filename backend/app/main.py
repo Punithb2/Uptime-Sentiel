@@ -19,22 +19,25 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Sentinel API", lifespan=lifespan)
 
-# Tightened CORS: Explicit origins only; avoids wildcarding all external vercel apps
 cors_origins_env = os.getenv("ALLOWED_ORIGINS")
-allowed_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()] if cors_origins_env else [
+env_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()] if cors_origins_env else []
+
+allowed_origins = [
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "http://localhost:5174",
     "http://localhost:4173",
-]
+    "https://uptime-sentinel-six.vercel.app",
+] + env_origins
 
-origin_regex = os.getenv("ALLOWED_ORIGINS_REGEX", None)
+# Scoped regex matching your specific Vercel app and preview deployments
+origin_regex = os.getenv("ALLOWED_ORIGINS_REGEX", r"https://uptime-sentinel.*\.vercel\.app")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
     allow_origin_regex=origin_regex,
-    allow_credentials=True if "*" not in allowed_origins else False,
+    allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
