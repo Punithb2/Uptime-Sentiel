@@ -480,17 +480,51 @@ export default function MonitorDetails() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1">
-                  Check Interval (Seconds)
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1 flex items-center justify-between">
+                  <span>Check Interval (Seconds)</span>
+                  <span className="font-mono text-[10px] text-blue-400 font-normal">
+                    {editInterval >= 3600
+                      ? `${(editInterval / 3600).toFixed(1)}h (${editInterval}s)`
+                      : editInterval >= 60
+                      ? `${(editInterval / 60).toFixed(1)}m (${editInterval}s)`
+                      : `${editInterval}s`}
+                  </span>
                 </label>
                 <input 
                   type="number" 
                   min="10" 
+                  max="86400"
                   value={editInterval} 
                   onChange={(e) => setEditInterval(e.target.value)} 
                   required 
-                  className="w-full bg-slate-900 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500" 
+                  className="w-full bg-slate-900 border border-white/10 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 font-mono" 
                 />
+                <div className="flex flex-wrap gap-1.5 mt-2">
+                  {[
+                    { label: '10s', val: 10 },
+                    { label: '30s', val: 30 },
+                    { label: '1m', val: 60 },
+                    { label: '3m', val: 180 },
+                    { label: '5m', val: 300 },
+                    { label: '10m', val: 600 },
+                    { label: '15m', val: 900 },
+                    { label: '30m', val: 1800 },
+                    { label: '1h', val: 3600 },
+                  ].map((p) => (
+                    <button
+                      key={p.val}
+                      type="button"
+                      onClick={() => setEditInterval(p.val)}
+                      className={`px-2 py-0.5 rounded-lg text-[10px] font-mono transition ${
+                        Number(editInterval) === p.val
+                          ? 'bg-blue-600 text-white font-semibold'
+                          : 'bg-white/5 text-slate-400 hover:text-white hover:bg-white/10'
+                      }`}
+                    >
+                      {p.label}
+                    </button>
+                  ))}
+                </div>
               </div>
 
               <div>

@@ -24,6 +24,14 @@ import { MonitorGridSkeleton } from '../components/Skeletons';
 import { useToast } from '../components/ToastContext';
 import ConfirmDialog from '../components/ConfirmDialog';
 
+function formatInterval(sec) {
+  if (!sec) return '60s';
+  if (sec < 60) return `${sec}s`;
+  if (sec % 3600 === 0) return `${sec / 3600}h (${sec}s)`;
+  if (sec % 60 === 0) return `${sec / 60}m (${sec}s)`;
+  return `${sec}s`;
+}
+
 function MethodBadge({ method = 'GET' }) {
   const m = method.toUpperCase();
   const colors = {
@@ -154,7 +162,7 @@ function ServiceCard({ data, onDelete, onAction, onToggleVisibility }) {
         <div className="space-y-1.5 mb-2 relative">
           <div className="flex items-center justify-between text-[10px] font-semibold text-slate-400">
             <span>Check History (Last 30)</span>
-            <span className="font-mono">{service.check_interval_seconds}s interval</span>
+            <span className="font-mono">{formatInterval(service.check_interval_seconds)} interval</span>
           </div>
 
           <div className="flex items-center gap-0.5 h-7 p-1 rounded-lg bg-slate-900/70 border border-white/5 relative">
@@ -277,6 +285,9 @@ export default function Monitors() {
   const [name, setName] = useState('');
   const [url, setUrl] = useState('');
   const [interval, setInterval] = useState(60);
+  const [isCustomInterval, setIsCustomInterval] = useState(false);
+  const [customValue, setCustomValue] = useState('10');
+  const [customUnit, setCustomUnit] = useState('minutes');
   const [actionError, setActionError] = useState('');
 
   // Advanced Network State
@@ -342,6 +353,9 @@ export default function Monitors() {
       setName('');
       setUrl('');
       setInterval(60);
+      setIsCustomInterval(false);
+      setCustomValue('10');
+      setCustomUnit('minutes');
       setMethod('GET');
       setHeaders('');
       setBody('');
@@ -542,21 +556,74 @@ export default function Monitors() {
               </div>
 
               <div>
-                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5">
-                  Check Frequency (Sec)
+                <label className="block text-xs font-semibold uppercase tracking-wider text-slate-400 mb-1.5 flex items-center justify-between">
+                  <span>Check Frequency</span>
+                  <span className="font-mono text-[10px] text-blue-400 font-normal">
+                    {interval}s
+                  </span>
                 </label>
-                <div className="flex gap-2">
+                <div className="space-y-2">
                   <select
-                    value={interval}
-                    onChange={(e) => setInterval(Number(e.target.value))}
+                    value={isCustomInterval ? 'custom' : interval}
+                    onChange={(e) => {
+                      if (e.target.value === 'custom') {
+                        setIsCustomInterval(true);
+                        const num = Number(customValue) || 10;
+                        const mult = customUnit === 'hours' ? 3600 : customUnit === 'minutes' ? 60 : 1;
+                        setInterval(Math.max(10, Math.min(86400, num * mult)));
+                      } else {
+                        setIsCustomInterval(false);
+                        setInterval(Number(e.target.value));
+                      }
+                    }}
                     className="w-full bg-slate-900/80 border border-white/10 rounded-xl px-3 py-2.5 text-sm text-white focus:outline-none focus:ring-2 focus:ring-blue-500 transition"
                   >
                     <option value={10}>10s (High-Frequency)</option>
                     <option value={30}>30 seconds</option>
-                    <option value={60}>60 seconds (1m)</option>
+                    <option value={60}>60 seconds (1 min)</option>
                     <option value={180}>3 minutes</option>
                     <option value={300}>5 minutes</option>
+                    <option value={600}>10 minutes</option>
+                    <option value={900}>15 minutes</option>
+                    <option value={1800}>30 minutes</option>
+                    <option value={3600}>1 hour</option>
+                    <option value="custom">⚙️ Custom Frequency...</option>
                   </select>
+
+                  {isCustomInterval && (
+                    <div className="flex items-center gap-1.5 p-1.5 bg-blue-500/10 border border-blue-500/20 rounded-xl fade-enter">
+                      <input
+                        type="number"
+                        min={customUnit === 'seconds' ? 10 : 1}
+                        max={customUnit === 'hours' ? 24 : customUnit === 'minutes' ? 1440 : 86400}
+                        placeholder={customUnit === 'seconds' ? 'e.g. 45' : 'e.g. 10'}
+                        value={customValue}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          setCustomValue(val);
+                          const num = Number(val) || 0;
+                          const mult = customUnit === 'hours' ? 3600 : customUnit === 'minutes' ? 60 : 1;
+                          setInterval(Math.max(10, Math.min(86400, num * mult)));
+                        }}
+                        className="w-full bg-slate-950/80 border border-white/10 rounded-lg px-2.5 py-1.5 text-xs text-white font-mono focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      />
+                      <select
+                        value={customUnit}
+                        onChange={(e) => {
+                          const newUnit = e.target.value;
+                          setCustomUnit(newUnit);
+                          const num = Number(customValue) || 0;
+                          const mult = newUnit === 'hours' ? 3600 : newUnit === 'minutes' ? 60 : 1;
+                          setInterval(Math.max(10, Math.min(86400, num * mult)));
+                        }}
+                        className="bg-slate-950/80 border border-white/10 rounded-lg px-2 py-1.5 text-xs text-slate-300 focus:outline-none focus:ring-1 focus:ring-blue-500"
+                      >
+                        <option value="seconds">Sec</option>
+                        <option value="minutes">Min</option>
+                        <option value="hours">Hours</option>
+                      </select>
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
