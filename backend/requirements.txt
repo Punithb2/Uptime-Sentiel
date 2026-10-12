@@ -10,3 +10,5 @@ bcrypt
 pyjwt
 greenlet
 python-multipart
+httpx
+email-validator

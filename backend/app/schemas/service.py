@@ -1,6 +1,7 @@
 from pydantic import BaseModel, HttpUrl, Field, field_validator
 from datetime import datetime
 from typing import Optional, List
+from app.core.url_validator import validate_safe_url
 
 class ServiceCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
@@ -13,6 +14,12 @@ class ServiceCreate(BaseModel):
     headers: Optional[dict] = None
     body: Optional[str] = None
     is_public: Optional[bool] = True
+
+    @field_validator("url")
+    @classmethod
+    def validate_monitor_url(cls, v: HttpUrl) -> HttpUrl:
+        validate_safe_url(str(v), allow_http=True)
+        return v
 
 class ServiceResponse(BaseModel):
     id: int
@@ -56,6 +63,13 @@ class ServiceUpdate(BaseModel):
     method: Optional[str] = Field(None, max_length=10)
     headers: Optional[dict] = None
     body: Optional[str] = None
+
+    @field_validator("url")
+    @classmethod
+    def validate_update_monitor_url(cls, v: Optional[HttpUrl]) -> Optional[HttpUrl]:
+        if v is not None:
+            validate_safe_url(str(v), allow_http=True)
+        return v
 
 class CheckResponse(BaseModel):
     id: int

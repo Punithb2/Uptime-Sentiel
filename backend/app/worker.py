@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import engine
 from app.models.models import Service, Check, Incident, User
 from app.core.mailer import send_alert_email
+from app.core.url_validator import validate_safe_url
 
 MAX_CONCURRENT_CHECKS = 50
 semaphore = asyncio.Semaphore(MAX_CONCURRENT_CHECKS)
@@ -28,9 +29,11 @@ async def send_webhook_alert(url: str, message: str):
     """Fires a generic JSON payload that works natively with Slack and Discord."""
     if not url: return
     try:
+        # Defense-in-depth: Verify webhook is safe HTTPS and not targeting internal infrastructure
+        validate_safe_url(url, allow_http=False)
         async with httpx.AsyncClient() as client:
             response = await client.post(url, json={"content": message}, timeout=5.0)
-            response.raise_for_status() # NEW: Raises an exception if the webhook receiver rejects it!
+            response.raise_for_status() # Raises an exception if the webhook receiver rejects it!
     except Exception as e:
         print(f"❌ Webhook delivery failed: {e}")
 
@@ -50,6 +53,9 @@ async def ping_service(client: httpx.AsyncClient, service_id: int):
                     return
 
                 try:
+                    # Defense-in-depth: Ensure target URL is not pointing to private networks or metadata
+                    validate_safe_url(service.url, allow_http=True)
+                    
                     method = service.method or "GET"
                     headers = service.headers or {}
                     

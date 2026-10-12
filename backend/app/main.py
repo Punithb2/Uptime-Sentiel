@@ -1,21 +1,19 @@
+import os
 from contextlib import asynccontextmanager
-import asyncio
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime, timezone
 
 from app.api import auth, services
-from app.worker import run_monitoring_cycle
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # The worker is now decoupled and runs as an independent process
+    # Decoupled microservice architecture:
+    # The monitoring worker runs as an independent OS process (e.g. via start.sh or separate worker instance).
     yield
 
 # Pass the lifespan context manager to the app
 app = FastAPI(title="Sentinel API", lifespan=lifespan)
-
-import os
 
 cors_origins_env = os.getenv("ALLOWED_ORIGINS")
 allowed_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()] if cors_origins_env else [
@@ -25,11 +23,15 @@ allowed_origins = [o.strip() for o in cors_origins_env.split(",") if o.strip()] 
     "http://localhost:4173",
 ]
 
+allow_creds = True
+if "*" in allowed_origins:
+    allow_creds = False
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=allowed_origins,
-    allow_origin_regex=r"https://.*\.vercel\.app" if not cors_origins_env else None,
-    allow_credentials=True,
+    allow_origin_regex=os.getenv("ALLOWED_ORIGINS_REGEX", r"https://.*\.vercel\.app"),
+    allow_credentials=allow_creds,
     allow_methods=["*"],
     allow_headers=["*"],
 )

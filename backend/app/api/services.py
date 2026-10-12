@@ -87,12 +87,13 @@ async def get_service_checks(
     if not service_result.scalars().first():
         raise HTTPException(status_code=404, detail="Service not found or unauthorized")
 
-    # 2. Fetch the most recent checks for this service
+    # 2. Fetch the most recent checks for this service (safely capped between 1 and 100)
+    safe_limit = min(max(1, limit), 100)
     checks_result = await db.execute(
         select(Check)
         .where(Check.service_id == service_id)
         .order_by(desc(Check.checked_at))
-        .limit(limit)
+        .limit(safe_limit)
     )
     raw_checks = checks_result.scalars().all()
 

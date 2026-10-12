@@ -79,20 +79,9 @@ async def update_user_profile(
     current_user: User = Depends(get_current_user)
 ):
     """Updates the user's settings, including webhooks, email, and password."""
-    # 1. Update Webhook with SSRF Protection
+    # 1. Update Webhook (SSRF protection already validated via Pydantic UserUpdate schema)
     if update_data.webhook_url is not None:
-        url = update_data.webhook_url.strip()
-        if url:
-            parsed = urllib.parse.urlparse(url)
-            if parsed.scheme != "https":
-                raise HTTPException(status_code=400, detail="Webhook URL must use secure HTTPS.")
-            
-            # Block internal network IPs to prevent SSRF attacks
-            hostname = parsed.hostname or ""
-            if hostname in ["localhost", "127.0.0.1", "0.0.0.0"] or hostname.startswith(("192.168.", "10.", "172.")):
-                raise HTTPException(status_code=400, detail="Internal IP addresses are not permitted for webhooks.")
-                
-        current_user.webhook_url = url if url else None
+        current_user.webhook_url = update_data.webhook_url.strip() if update_data.webhook_url else None
         
     # 2. Update Email
     if update_data.email:
