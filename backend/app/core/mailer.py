@@ -34,13 +34,12 @@ def _send_email_smtp_sync(to_email: str, subject: str, body: str):
 
 async def send_alert_email(to_email: str, subject: str, body: str):
     """
-    Sends alert emails over HTTPS port 443 to bypass cloud provider SMTP blocks (Render free tier).
-    Supports:
-    1. Brevo HTTPS API: Free, 300 emails/day to ANY recipient without owning a custom domain!
-    2. Resend HTTPS API: Requires custom domain (or sends only to account owner with onboarding@resend.dev).
-    3. SMTP fallback: For local development.
+    Sends alert emails.
+    1. Brevo HTTPS API (Port 443): Free, 300 emails/day to ANY recipient without owning a custom domain.
+       Bypasses cloud provider SMTP blocks (Render free tier blocks ports 25, 465, 587).
+    2. SMTP Fallback: For local development or servers with unblocked SMTP ports.
     """
-    # 1. Brevo (Best option without a custom domain - sends to anyone with just verified personal email)
+    # 1. Brevo HTTPS API (Primary for cloud production)
     brevo_api_key = os.getenv("BREVO_API_KEY")
     if brevo_api_key:
         sender_email = os.getenv("BREVO_SENDER_EMAIL", os.getenv("SMTP_EMAIL"))
@@ -69,33 +68,8 @@ async def send_alert_email(to_email: str, subject: str, body: str):
             logger.error(f"Brevo HTTPS email error to {to_email}: {e}")
         return
 
-    # 2. Resend (Requires custom domain to send to arbitrary third-party emails)
-    resend_api_key = os.getenv("RESEND_API_KEY")
-    if resend_api_key:
-        resend_from = os.getenv("RESEND_FROM_EMAIL", "UptimeSentinel <onboarding@resend.dev>")
-        payload = {
-            "from": resend_from,
-            "to": [to_email],
-            "subject": subject,
-            "text": body
-        }
-        headers = {
-            "Authorization": f"Bearer {resend_api_key.strip()}",
-            "Content-Type": "application/json"
-        }
-        try:
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.post("https://api.resend.com/emails", json=payload, headers=headers)
-                if response.status_code in (200, 201):
-                    logger.info(f"Alert email successfully dispatched to {to_email} via Resend HTTPS API")
-                else:
-                    logger.error(f"Resend HTTPS email failed ({response.status_code}): {response.text}")
-        except Exception as e:
-            logger.error(f"HTTPS email delivery error to {to_email}: {e}")
-        return
-
-    # 3. Fallback to local SMTP if configured
+    # 2. Fallback to local SMTP if configured
     if os.getenv("SMTP_EMAIL") and os.getenv("SMTP_PASSWORD"):
         await asyncio.to_thread(_send_email_smtp_sync, to_email, subject, body)
     else:
-        logger.warning("Skipping email alert: Neither BREVO_API_KEY, RESEND_API_KEY, nor SMTP credentials configured.")
+        logger.warning("Skipping email alert: Neither BREVO_API_KEY nor SMTP credentials configured.")
