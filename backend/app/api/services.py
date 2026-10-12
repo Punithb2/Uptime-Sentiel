@@ -164,7 +164,17 @@ async def get_dashboard_summary(
     services = services_query.scalars().all()
     
     if not services:
-        return {"stats": {"total_monitors": 0, "up_monitors": 0, "down_monitors": 0, "paused_monitors": 0, "average_latency_ms": 0}, "services": []}
+        return {
+            "stats": {
+                "total_monitors": 0,
+                "up_monitors": 0,
+                "down_monitors": 0,
+                "pending_monitors": 0,
+                "paused_monitors": 0,
+                "average_latency_ms": 0
+            },
+            "services": []
+        }
         
     service_ids = [s.id for s in services]
     twenty_four_hours_ago = datetime.now(timezone.utc) - timedelta(hours=24)

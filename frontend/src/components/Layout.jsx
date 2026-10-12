@@ -59,6 +59,7 @@ export default function Layout() {
   };
 
   const handleLogout = () => {
+    queryClient.clear();
     localStorage.removeItem('token');
     navigate('/');
   };

@@ -106,3 +106,26 @@ def test_public_status_page_sanitizes_incident_causes():
         assert data["incidents"][0]["status"] == "Service Outage"
     finally:
         app.dependency_overrides.clear()
+
+def test_dashboard_summary_for_new_user_with_zero_monitors():
+    """Validates that a newly registered user with 0 monitors receives valid DashboardSummaryResponse without 500 error."""
+    user = User(id=5, email="new_user@example.com")
+    mock_db = AsyncMock()
+    
+    res_services = MagicMock()
+    res_services.scalars.return_value.all.return_value = []
+    mock_db.execute.return_value = res_services
+
+    app.dependency_overrides[get_current_user] = lambda: user
+    app.dependency_overrides[get_db] = lambda: mock_db
+
+    try:
+        resp = client.get("/services/dashboard/summary")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["stats"]["total_monitors"] == 0
+        assert data["stats"]["pending_monitors"] == 0
+        assert data["services"] == []
+    finally:
+        app.dependency_overrides.clear()
+

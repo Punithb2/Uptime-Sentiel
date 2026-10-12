@@ -102,12 +102,12 @@ class ServiceStatusResponse(BaseModel):
     recent_checks: List[CheckResponse]
 
 class DashboardStats(BaseModel):
-    total_monitors: int
-    up_monitors: int
-    down_monitors: int
-    pending_monitors: int
-    paused_monitors: int
-    average_latency_ms: int
+    total_monitors: int = 0
+    up_monitors: int = 0
+    down_monitors: int = 0
+    pending_monitors: int = 0
+    paused_monitors: int = 0
+    average_latency_ms: int = 0
 
 class IncidentResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)

@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { Activity, Lock, Mail, ArrowRight } from 'lucide-react';
 import { api } from '../lib/api';
 
@@ -10,6 +11,7 @@ export default function Auth() {
   const [error, setError] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -27,10 +29,12 @@ export default function Auth() {
             'Content-Type': 'application/x-www-form-urlencoded'
           }
         });
+        queryClient.clear();
         localStorage.setItem('token', res.data.access_token);
         navigate('/dashboard');
       } else {
         const res = await api.post('/auth/register', { email, password });
+        queryClient.clear();
         localStorage.setItem('token', res.data.access_token);
         navigate('/dashboard');
       }
